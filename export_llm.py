@@ -119,11 +119,24 @@ def deal_markdown(deal, touchpoints, users_map, stages_map):
         else:
             lines.append(f"[{ts}] {icon} {who_tag}{stage_tag}: (без текста)")
     lines.append("")
+
+    # все поля сделки (кроме уже показанных в шапке)
+    fields = deal.get("_fields") or {}
+    if fields:
+        shown = {"ID", "TITLE", "ASSIGNED_BY_ID", "CONTACT_ID", "STAGE_ID",
+                 "OPPORTUNITY", "CURRENCY_ID", "DATE_CREATE", "SOURCE_ID"}
+        lines += ["", "## Поля сделки", ""]
+        for code, f in fields.items():
+            if code in shown:
+                continue
+            lines.append(f"- {f['title']}: {f['value']}")
+        lines.append("")
     return "\n".join(lines)
 
 
-def write_deal_markdown(deal, touchpoints, users_map, stages_map):
-    out_dir = os.path.join(config.EXPORT_DIR, "deals")
+def write_deal_markdown(deal, touchpoints, users_map, stages_map, group=None):
+    out_dir = os.path.join(config.EXPORT_DIR, "deals", group) if group \
+        else os.path.join(config.EXPORT_DIR, "deals")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"deal_{int(deal['ID'])}.md")
     with open(path, "w", encoding="utf-8") as f:

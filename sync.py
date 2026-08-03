@@ -72,7 +72,7 @@ def resolve_transcript(client, deal_id, call, args):
 
 
 # ---------------------------------------------------------------- одна сделка
-def process_deal(client, deal, users_map, stages_map, contacts, args):
+def process_deal(client, deal, users_map, stages_map, contacts, args, group=None):
     did = int(deal["ID"])
     raw = {"deal": deal}
     touchpoints = []
@@ -137,7 +137,7 @@ def process_deal(client, deal, users_map, stages_map, contacts, args):
         json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
 
     # --- markdown-протокол
-    export_llm.write_deal_markdown(deal, touchpoints, users_map, stages_map)
+    export_llm.write_deal_markdown(deal, touchpoints, users_map, stages_map, group=group)
 
     stats = {
         "deal_id": did,
@@ -146,9 +146,11 @@ def process_deal(client, deal, users_map, stages_map, contacts, args):
         "contact": deal.get("_contact_name"),
         "source": deal.get("_source"),
         "stage": stages_map.get(deal.get("STAGE_ID"), deal.get("STAGE_ID")),
+        "closed": fetch_deals.is_closed(deal),
         "touchpoints": len(touchpoints),
         "calls": len(calls),
         "ol_chats": len(chats),
+        "fields": deal.get("_fields") or {},
     }
     return touchpoints, stats
 
@@ -188,40 +190,68 @@ def main():
         log.warning("Справочник источников не получен: %s", e)
         source_map = {}
 
+    # метаданные всех полей сделки (названия, enum-варианты)
+    try:
+        fields_meta = fetch_deals.load_deal_fields_meta(client)
+        log.info("Метаданные полей сделки: %d", len(fields_meta))
+    except Exception as e:
+        log.warning("Метаданные полей не получены: %s", e)
+        fields_meta = {}
+
     deals = fetch_deals.get_deals(client)
     log.info("Сделок к обработке: %d", len(deals))
 
-    all_tps, index = [], []
+    groups = {"active": {"tps": [], "index": []},
+              "completed": {"tps": [], "index": []}}
+    skipped = 0
     t0 = time.time()
     for i, deal in enumerate(deals, 1):
         did = int(deal["ID"])
+        closed = fetch_deals.is_closed(deal)
+        group = "completed" if closed else "active"
+        if (group == "active" and not config.PROCESS_ACTIVE) or \
+           (group == "completed" and not config.PROCESS_COMPLETED):
+            skipped += 1
+            continue
         try:
             deal["_source"] = source_name(source_map, deal.get("SOURCE_ID"))
-            tps, stats = process_deal(client, deal, users_map, stages_map, contacts, args)
-            all_tps.extend(tps)
-            index.append(stats)
-            log.info("[%d/%d] Сделка %d «%s»: касаний %d (звонков %d, чатов %d)",
-                     i, len(deals), did, (deal.get("TITLE") or "")[:40],
+            deal["_fields"] = fetch_deals.resolve_deal_fields(deal, fields_meta)
+            tps, stats = process_deal(client, deal, users_map, stages_map,
+                                      contacts, args, group=group)
+            groups[group]["tps"].extend(tps)
+            groups[group]["index"].append(stats)
+            log.info("[%d/%d] %s | Сделка %d «%s»: касаний %d (звонков %d, чатов %d)",
+                     i, len(deals), group, did, (deal.get("TITLE") or "")[:40],
                      stats["touchpoints"], stats["calls"], stats["ol_chats"])
         except BitrixError as e:
             log.error("[%d/%d] Сделка %d: ошибка API: %s", i, len(deals), did, e)
         except Exception as e:
             log.exception("[%d/%d] Сделка %d: %s", i, len(deals), did, e)
 
-    all_tps.sort(key=lambda t: (t["deal_id"], t["timestamp"] or ""))
-    p1 = export_llm.write_touchpoints_jsonl(all_tps)
-    p2 = export_llm.write_deals_index(index, users_map)
+    total_deals = total_tps = 0
+    for group, data in groups.items():
+        if not data["index"]:
+            continue
+        data["tps"].sort(key=lambda t: (t["deal_id"], t["timestamp"] or ""))
+        p1 = export_llm.write_touchpoints_jsonl(
+            data["tps"], os.path.join(config.EXPORT_DIR, f"touchpoints_{group}.jsonl"))
+        p2 = export_llm.write_deals_index(
+            data["index"], users_map,
+            os.path.join(config.EXPORT_DIR, f"deals_index_{group}.jsonl"))
+        total_deals += len(data["index"])
+        total_tps += len(data["tps"])
+        log.info("[%s] %d сделок, %d касаний -> %s", group,
+                 len(data["index"]), len(data["tps"]), p1)
 
     with open(os.path.join(config.DATA_DIR, "state.json"), "w", encoding="utf-8") as f:
         json.dump({"last_run": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                   "deals": len(index), "touchpoints": len(all_tps)},
+                   "deals": total_deals, "touchpoints": total_tps},
                   f, ensure_ascii=False, indent=1)
 
-    log.info("Готово за %.1f мин: %d сделок, %d касаний",
-             (time.time() - t0) / 60, len(index), len(all_tps))
-    log.info("JSONL: %s", p1)
-    log.info("Индекс сделок: %s", p2)
-    log.info("Markdown-протоколы: %s", os.path.join(config.EXPORT_DIR, "deals"))
+    log.info("Готово за %.1f мин: %d сделок, %d касаний (пропущено фильтром: %d)",
+             (time.time() - t0) / 60, total_deals, total_tps, skipped)
+    log.info("Markdown-протоколы: %s (active|completed)",
+             os.path.join(config.EXPORT_DIR, "deals"))
 
 
 if __name__ == "__main__":

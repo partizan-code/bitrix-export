@@ -11,8 +11,20 @@
 pip install -r requirements.txt
 ```
 
-`faster-whisper` нужен только для локальной транскрибации записей. Если на портале
-уже включена AI-расшифровка звонков Bitrix — скрипт сначала берёт её, Whisper — запасной вариант.
+## Транскрибация
+
+Провайдер выбирается в `config.py` (`TRANSCRIPTION_PROVIDER`):
+
+- **`assemblyai`** (по умолчанию) — облачная транскрибация с разделением спикеров
+  (диаризация: менеджер/клиент выходят отдельными репликами). Нужен ключ:
+  переменная окружения `ASSEMBLYAI_API_KEY` или файл `.env` рядом с `config.py`.
+- **`whisper`** — локальный Faster Whisper, без внешних сервисов
+  (`pip install faster-whisper`, нужен `ffmpeg` в PATH).
+- `PREFER_BUILTIN_TRANSCRIPT = True` — сначала брать штатную расшифровку BitrixGPT,
+  если она есть у звонка (не покрывает закрытые сделки).
+
+Записи скачиваются только для состоявшихся разговоров длиннее
+`MIN_RECORDING_DURATION_SEC` (по умолчанию 15 сек).
 
 ## Настройка
 
@@ -33,13 +45,21 @@ python sync.py --skip-whisper              :: только штатные рас
 
 ## Результат
 
+Сделки разделяются по завершённости (`PROCESS_ACTIVE` / `PROCESS_COMPLETED` в config.py):
+
 | Путь | Содержимое |
 |---|---|
-| `export/touchpoints.jsonl` | Одна строка = одно касание (машинный формат для БД/RAG) |
-| `export/deals/deal_<id>.md` | Хронологический протокол сделки — готовый контекст для LLM |
-| `export/deals_index.jsonl` | Индекс: сделка → число касаний, звонков, чатов |
+| `export/touchpoints_active.jsonl` | Касания по активным сделкам (строка = касание) |
+| `export/touchpoints_completed.jsonl` | Касания по завершённым сделкам |
+| `export/deals/active/deal_<id>.md` | Протоколы активных сделок (контекст для LLM) |
+| `export/deals/completed/deal_<id>.md` | Протоколы завершённых сделок |
+| `export/deals_index_active/completed.jsonl` | Индекс + все поля сделки |
 | `raw/deal_<id>.json` | Сырой JSON из API (пересборка без повторных запросов) |
 | `transcripts/`, `audio/` | Тексты транскрипций и записи звонков |
+
+Выгружаются **все поля сделки** (стандартные + `UF_*`). Значения полей-списков
+резолвятся в названия через метаданные (`crm.deal.fields` + `crm.deal.userfield.list`,
+кэш — `data/deal_fields_meta.json`). В markdown-протоколе поля — секцией «Поля сделки».
 
 ## Схема касания (touchpoints.jsonl)
 
@@ -70,6 +90,7 @@ python sync.py --skip-whisper              :: только штатные рас
 
 ## Источники данных (REST API)
 
-`crm.deal.list` · `crm.stagehistory.list` (стадии) · `voximplant.statistic.get` (звонки + записи) ·
+`crm.deal.list` · `crm.stagehistory.list` (стадии) · `crm.activity.list` TYPE_ID=2 (звонки,
+работает с любой телефонией) · `disk.file.get` (записи разговоров из FILES активности) ·
 `crm.activity.call.getTranscript` (штатная расшифровка) · `imopenlines.crm.chat.get` +
 `imopenlines.session.history.get` (чаты) · `crm.timeline.comment.list` · `user.get` (справочник)
