@@ -27,12 +27,14 @@ class BitrixError(Exception):
 
 class B24Client:
     def __init__(self, webhook_url=None):
-        url = (webhook_url or config.WEBHOOK_URL).rstrip("/") + "/"
-        if "ВАШ_ПОРТАЛ" in url or "USER_ID" in url:
+        raw = webhook_url or config.WEBHOOK_URL
+        if not raw or "ВАШ_ПОРТАЛ" in raw or "USER_ID" in raw:
             raise SystemExit(
-                "Не настроен WEBHOOK_URL. Подставьте свой вебхук в config.py "
-                "или передайте переменную окружения B24_WEBHOOK."
+                "Не настроен WEBHOOK_URL. Задайте переменную окружения "
+                "B24_WEBHOOK (или строку B24_WEBHOOK=... в файле .env "
+                "рядом с config.py)."
             )
+        url = raw.rstrip("/") + "/"
         self.base = url
         self.session = requests.Session()
 
@@ -101,9 +103,12 @@ class B24Client:
             params["start"] = start
             data = self.call(method, params)
             res = data.get("result") or []
-            if isinstance(res, dict) and "items" in res:
-                # crm.stagehistory.list и часть новых методов отдают {"items": [...]}
-                res = res["items"] or []
+            if isinstance(res, dict):
+                # crm.stagehistory.list -> {"items": [...]}, tasks.task.list -> {"tasks": [...]}
+                for key in ("items", "tasks"):
+                    if key in res:
+                        res = res[key] or []
+                        break
             if isinstance(res, list):
                 items.extend(res)
             else:

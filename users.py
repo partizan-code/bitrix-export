@@ -131,15 +131,21 @@ def stage_name(stages_map, stage_id):
     return stages_map.get(stage_id, stage_id)
 
 
-# ------------------------------------------------------------------ sources
+# ------------------------------------------------------------------ sources / statuses
+def load_status_book(client, entity_id):
+    """
+    Справочник статусов CRM: {STATUS_ID: название}.
+    ENTITY_ID: SOURCE, DEAL_TYPE и т.п. (crm.status.list).
+    """
+    statuses = {}
+    for s in client.result("crm.status.list", {"filter": {"ENTITY_ID": entity_id}}) or []:
+        statuses[s["STATUS_ID"]] = s.get("NAME", s["STATUS_ID"])
+    return statuses
+
+
 def load_sources(client):
-    """
-    Справочник источников CRM: {STATUS_ID: название}.
-    crm.status.list с ENTITY_ID=SOURCE (напр. PARTNER -> "РБ OFF, Существующий клиент...").
-    """
-    sources = {}
-    for s in client.result("crm.status.list", {"filter": {"ENTITY_ID": "SOURCE"}}) or []:
-        sources[s["STATUS_ID"]] = s.get("NAME", s["STATUS_ID"])
+    """Источники CRM (SOURCE): PARTNER -> "РБ OFF, Существующий клиент..."."""
+    sources = load_status_book(client, "SOURCE")
     _save_json(os.path.join(config.DATA_DIR, "sources.json"), sources)
     return sources
 
@@ -148,3 +154,16 @@ def source_name(sources_map, source_id):
     if not source_id:
         return None
     return sources_map.get(source_id, source_id)
+
+
+def load_categories(client):
+    """Воронки сделок: {id: название}. 0 -> 'Основная воронка'."""
+    res = client.result("crm.category.list", {"entityTypeId": 2})
+    if isinstance(res, dict):
+        items = res.get("categories", [])
+    else:
+        items = res or []
+    cats = {"0": "Основная воронка"}
+    for c in items:
+        cats[str(c.get("id"))] = c.get("name") or f"Воронка {c.get('id')}"
+    return cats

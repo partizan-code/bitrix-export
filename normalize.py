@@ -142,6 +142,50 @@ def tp_from_activity(deal, act, users_map, history, stages_map):
     return _fill_stage(tp, history, stages_map)
 
 
+# ------------------------------------------------------------------ задачи
+TASK_STATUS = {
+    -1: "Просрочена", 1: "Новая", 2: "Назначена", 3: "Выполняется",
+    4: "Ожидает контроля", 5: "Завершена", 6: "Отложена", 7: "Отклонена",
+}
+
+
+def tp_from_task(deal, t, users_map, history, stages_map, field):
+    """
+    Задача по сделке. field — функция доступа к полям (регистро-независимая).
+    Актор — ИСПОЛНИТЕЛЬ задачи (RESPONSIBLE_ID); постановщик — в content.
+    """
+    tid = field(t, "ID")
+    tp = _base(deal, field(t, "CREATED_DATE", "createdDate"), "task", "task")
+    tp["touchpoint_id"] = f"task_{tid}"
+    rid = field(t, "RESPONSIBLE_ID", "responsibleId")
+    rid = int(rid) if rid else None
+    tp["actor"] = {
+        "type": "manager" if rid else "system",
+        "user_id": rid,
+        "name": user_name(users_map, rid) if rid else None,
+    }
+    tp["direction"] = "internal"
+
+    status_raw = field(t, "REAL_STATUS", "realStatus") or field(t, "STATUS", "status")
+    try:
+        status = TASK_STATUS.get(int(status_raw), str(status_raw))
+    except (TypeError, ValueError):
+        status = None
+
+    created_by = field(t, "CREATED_BY_ID", "CREATED_BY", "createdBy")
+    tp["content"] = {
+        "type": "text",
+        "text": (field(t, "TITLE", "title") or "").strip(),
+        "description": (field(t, "DESCRIPTION", "description") or "").strip(),
+        "status": status,
+        "deadline": field(t, "DEADLINE", "deadline"),
+        "closed_date": field(t, "CLOSED_DATE", "closedDate"),
+        "created_by": user_name(users_map, int(created_by)) if created_by else None,
+    }
+    tp["source"] = {"task_id": tid}
+    return _fill_stage(tp, history, stages_map)
+
+
 # ------------------------------------------------------------------ смена стадий
 def tp_stage_events(deal, history, stages_map):
     """Смены стадий как системные события ленты."""
