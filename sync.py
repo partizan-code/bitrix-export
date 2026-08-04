@@ -34,6 +34,8 @@ import fetch_openlines
 import fetch_tasks
 import normalize
 import export_llm
+import registry
+import store
 import transcribe
 from api_client import B24Client, BitrixError
 from users import (load_users, load_stages, load_sources, source_name,
@@ -151,15 +153,19 @@ def process_deal(client, deal, users_map, stages_map, contacts, args,
         json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
 
     # --- markdown-протокол
-    export_llm.write_deal_markdown(deal, touchpoints, users_map, stages_map,
-                                   group=group, ctx=ctx, pipeline_map=pipeline_map)
+    md_path = export_llm.write_deal_markdown(deal, touchpoints, users_map,
+                                             stages_map, group=group, ctx=ctx,
+                                             pipeline_map=pipeline_map)
 
     stats = {
         "deal_id": did,
         "title": deal.get("TITLE"),
+        "date_create": deal.get("DATE_CREATE"),
+        "date_modify": deal.get("DATE_MODIFY"),
         "responsible": deal.get("ASSIGNED_BY_ID"),
         "contact": deal.get("_contact_name"),
         "source": deal.get("_source"),
+        "country": deal.get("_country"),
         "stage": stages_map.get(deal.get("STAGE_ID"), deal.get("STAGE_ID")),
         "closed": fetch_deals.is_closed(deal),
         "group": group,
@@ -169,6 +175,8 @@ def process_deal(client, deal, users_map, stages_map, contacts, args,
         "tasks": len(tasks),
         "fields": deal.get("_fields") or {},
     }
+    # артефакты — в постоянное хранилище (для кумулятивных снимков)
+    store.save_deal(deal, md_path, touchpoints, stats)
     return touchpoints, stats
 
 
@@ -271,6 +279,31 @@ def main():
             client, overlap_from.isoformat(timespec="seconds"))
     else:
         deals = fetch_deals.get_deals(client)
+
+    # --- реестр + store: кумулятивный снимок.
+    # Каждый архив содержит ВСЕ сделки, но закрытые/технические, выгруженные
+    # ранее и не изменившиеся, НЕ переобрабатываются (без запросов активностей,
+    # без скачивания и транскрибации): их артефакты переносятся из store.
+    reg = registry.load()
+    reused = []          # (deal, group) — перенести из store без обработки
+    deal_groups = {}
+    if export_type == "incremental" and reg:
+        kept = []
+        for deal in deals:
+            group = fetch_deals.deal_group(deal, stages_map)
+            if registry.is_duplicate_closed(deal, group, reg):
+                rec = reg[str(deal["ID"])]
+                if registry.can_reuse(rec, config.SCHEMA_VERSION) and \
+                        store.has_deal(deal["ID"]):
+                    reused.append((deal, group))
+                    continue
+                # артефактов нет или схема устарела -> обрабатываем заново
+            kept.append((deal, group))
+        if reused:
+            log.info("Из store без переобработки: %d закрытых/технических "
+                     "сделок", len(reused))
+        deal_groups = {int(d["ID"]): g for d, g in kept + reused}
+        deals = [d for d, _g in kept]
     log.info("Режим: %s. Сделок к обработке: %d", export_type, len(deals))
 
     # контекст снимка выгрузки (ID, дата, версия схемы)
@@ -293,7 +326,7 @@ def main():
     t0 = time.time()
     for i, deal in enumerate(deals, 1):
         did = int(deal["ID"])
-        group = fetch_deals.deal_group(deal, stages_map)
+        group = deal_groups.get(did) or fetch_deals.deal_group(deal, stages_map)
         if not group_enabled[group]:
             skipped.append({"deal_id": did, "reason": f"группа '{group}' отключена"})
             continue
@@ -301,11 +334,13 @@ def main():
             deal["_source"] = source_name(source_map, deal.get("SOURCE_ID"))
             deal["_fields"] = fetch_deals.resolve_deal_fields(
                 deal, fields_meta, users_map, status_maps, category_map)
+            deal["_country"] = export_llm.deal_country(deal)
             tps, stats = process_deal(client, deal, users_map, stages_map,
                                       contacts, args, group=group,
                                       ctx=ctx, pipeline_map=category_map)
             groups[group]["tps"].extend(tps)
             groups[group]["index"].append(stats)
+            registry.mark(reg, deal, group, ctx)
             log.info("[%d/%d] %s | Сделка %d «%s»: касаний %d (звонков %d, чатов %d, задач %d)",
                      i, len(deals), group, did, (deal.get("TITLE") or "")[:40],
                      stats["touchpoints"], stats["calls"], stats["ol_chats"], stats["tasks"])
@@ -315,6 +350,54 @@ def main():
         except Exception as e:
             log.exception("[%d/%d] Сделка %d: %s", i, len(deals), did, e)
             errors.append({"deal_id": did, "error": str(e)})
+
+    # --- перенос закрытых/технических сделок из store
+    # (никаких запросов к API: ни активностей, ни аудио, ни транскрибаций)
+    def reuse_from_store(deal, group):
+        did = int(deal["ID"])
+        stats = store.load_stats(did)
+        stats["reused"] = True
+        stats["group"] = group
+        if not stats.get("country"):
+            stats["country"] = deal.get("_country") or config.FILE_COUNTRY
+        export_llm.write_deal_markdown_copy(store.load_md(did), deal, group,
+                                            ctx, category_map)
+        groups[group]["tps"].extend(store.load_tps(did))
+        groups[group]["index"].append(stats)
+        registry.mark(reg, deal, group, ctx)
+
+    # 1) закрытые из этой выборки (изменились до закрытия на этой неделе и т.п.)
+    for deal, group in reused:
+        try:
+            reuse_from_store(deal, group)
+        except Exception as e:
+            log.error("Сделка %s: не удалось перенести из store: %s",
+                      deal["ID"], e)
+            errors.append({"deal_id": int(deal["ID"]), "error": f"store: {e}"})
+
+    # 2) добор остальных закрытых из реестра: архив КУМУЛЯТИВНЫЙ —
+    # сделки прошлых недель тоже должны быть в каждом новом пакете
+    # (только в инкрементальном режиме; full — это ребейз по своему фильтру)
+    present_ids = {d["deal_id"] for g in groups.values() for d in g["index"]}
+    swept = 0
+    for did_str, rec in (reg.items() if export_type == "incremental" else ()):
+        did = int(did_str)
+        if (did in present_ids
+                or rec.get("group") not in registry.CLOSED_GROUPS
+                or not group_enabled.get(rec.get("group"))
+                or not registry.can_reuse(rec, config.SCHEMA_VERSION)
+                or not store.has_deal(did)):
+            continue
+        try:
+            reuse_from_store(store.load_deal(did), rec["group"])
+            swept += 1
+        except Exception as e:
+            log.error("Сделка %d: добор из store не удался: %s", did, e)
+            errors.append({"deal_id": did, "error": f"store: {e}"})
+    total_reused = len(reused) + swept
+    if total_reused:
+        log.info("Перенесено из store без переобработки: %d сделок",
+                 total_reused)
 
     total_deals = total_tps = 0
     for group, data in groups.items():
@@ -363,7 +446,9 @@ def main():
     }
 
     incremental = {
-        "export_type": export_type,
+        # update_mode — СПОСОБ получения данных из Bitrix;
+        # сам архив всегда FULL_SNAPSHOT (см. write_manifest)
+        "update_mode": "INCREMENTAL" if export_type == "incremental" else "FULL",
         "previous_export_id": prev_state.get("export_id"),
         "previous_snapshot_at": prev_state.get("last_run"),
         "changed_since": changed_since.isoformat(timespec="seconds")
@@ -379,12 +464,15 @@ def main():
     log.info("Manifest: %s", mpath)
 
     if config.MAKE_SNAPSHOT_ZIP and total_deals:
-        zpath = export_llm.make_deals_zip(ctx, pipelines)
+        snap_countries = [d.get("country") for g in groups.values()
+                          for d in g["index"]]
+        zpath = export_llm.make_deals_zip(ctx, pipelines, snap_countries)
         log.info("Архив снимка: %s", zpath)
 
-    # state.json — якорь следующего инкрементального снимка.
-    # Тестовые запуски (--deals / --limit / DEALS_LIMIT) якорь НЕ сдвигают,
-    # иначе изменения между полным и тестовым запуском потеряются.
+    # state.json — якорь следующего инкрементального снимка,
+    # registry.json — реестр выгруженных сделок (защита от дублей закрытых).
+    # Тестовые запуски (--deals / --limit / DEALS_LIMIT) ни то ни другое
+    # НЕ обновляют, иначе тесты сдвинули бы якорь и «засорили» реестр.
     if not is_test_run:
         with open(os.path.join(config.DATA_DIR, "state.json"), "w",
                   encoding="utf-8") as f:
@@ -393,8 +481,10 @@ def main():
                        "export_type": export_type,
                        "deals": total_deals, "touchpoints": total_tps},
                       f, ensure_ascii=False, indent=1)
+        registry.save(reg)
+        log.info("Реестр сделок: %d записей (registry.json)", len(reg))
     else:
-        log.info("Тестовый запуск: state.json (якорь инкремента) не обновляю")
+        log.info("Тестовый запуск: state.json и registry.json не обновляю")
 
     log.info("Готово за %.1f мин: %d сделок, %d касаний (пропущено: %d, ошибок: %d)",
              (time.time() - t0) / 60, total_deals, total_tps, len(skipped), len(errors))

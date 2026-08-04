@@ -39,6 +39,46 @@ def pipeline_slug(name):
     return slug or "NOPPE"
 
 
+# ------------------------------------------------------------------ страна сделки
+_COUNTRY_MAP = {
+    "рб": "RB", "беларусь": "RB", "республика беларусь": "RB",
+    "belarus": "RB", "by": "RB", "rb": "RB",
+    "рф": "RF", "россия": "RF", "российская федерация": "RF",
+    "russia": "RF", "ru": "RF", "rf": "RF",
+}
+
+
+def normalize_country(value):
+    """'РБ'/'Беларусь' -> 'RB', 'РФ'/'Россия' -> 'RF'; прочее -> slug."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return ""
+    if v in _COUNTRY_MAP:
+        return _COUNTRY_MAP[v]
+    return pipeline_slug(v)
+
+
+def deal_country(deal):
+    """
+    Код страны сделки для имени файла: из поля сделки «Страна»
+    (config.COUNTRY_FIELD или автоопределение по названию), иначе
+    запасной config.FILE_COUNTRY.
+    """
+    fields = deal.get("_fields") or {}
+    if config.COUNTRY_FIELD:
+        f = fields.get(config.COUNTRY_FIELD)
+        if f:
+            code = normalize_country(f.get("value"))
+            if code:
+                return code
+    for f in fields.values():
+        if "страна" in str(f.get("title") or "").lower():
+            code = normalize_country(f.get("value"))
+            if code:
+                return code
+    return config.FILE_COUNTRY
+
+
 class ExportContext:
     """Параметры текущего снимка выгрузки."""
 
@@ -111,6 +151,8 @@ def deal_markdown(deal, touchpoints, users_map, stages_map):
     ]
     if deal.get("_source"):
         lines.append(f"- Источник: {deal['_source']}")
+    if deal.get("_country"):
+        lines.append(f"- Страна: {deal['_country']}")
     lines += [
         f"- Создана: {deal.get('DATE_CREATE', '—')}",
     ]
@@ -212,7 +254,8 @@ def write_deal_markdown(deal, touchpoints, users_map, stages_map, group=None,
     if ctx is not None:
         cat = str(deal.get("CATEGORY_ID") or "0")
         slug = pipeline_slug((pipeline_map or {}).get(cat, cat))
-        fname = (f"{config.FILE_BRAND}_DEAL_{config.FILE_COUNTRY}_{slug}"
+        country = deal.get("_country") or config.FILE_COUNTRY
+        fname = (f"{config.FILE_BRAND}_DEAL_{country}_{slug}"
                  f"_{int(deal['ID'])}_SNAP_{ctx.snap}"
                  f"_schema-v{ctx.schema_version}.md")
     else:
@@ -223,6 +266,26 @@ def write_deal_markdown(deal, touchpoints, users_map, stages_map, group=None,
     return path
 
 
+def write_deal_markdown_copy(md_text, deal, group, ctx, pipeline_map):
+    """
+    Перенос готового протокола из store в текущий снимок:
+    то же содержимое, но имя файла — с датой ЭТОГО снимка.
+    Для неизменных закрытых/технических сделок (без переобработки).
+    """
+    out_dir = os.path.join(config.EXPORT_DIR, "deals", group)
+    os.makedirs(out_dir, exist_ok=True)
+    cat = str(deal.get("CATEGORY_ID") or "0")
+    slug = pipeline_slug((pipeline_map or {}).get(cat, cat))
+    country = deal.get("_country") or config.FILE_COUNTRY
+    fname = (f"{config.FILE_BRAND}_DEAL_{country}_{slug}"
+             f"_{int(deal['ID'])}_SNAP_{ctx.snap}"
+             f"_schema-v{ctx.schema_version}.md")
+    path = os.path.join(out_dir, fname)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md_text)
+    return path
+
+
 # ================================================================== manifest + zip
 ALL_GROUPS = ("active", "completed", "technical")
 
@@ -230,33 +293,53 @@ ALL_GROUPS = ("active", "completed", "technical")
 def write_manifest(ctx, pipelines, groups_index, errors, skipped, filter_desc,
                    incremental=None):
     """
-    manifest.json в export/deals:
-    ID выгрузки, тип выгрузки, версия схемы, дата снимка, страна, воронки,
-    период, фильтр, связь с предыдущим снимком, количество файлов,
-    ID всех сделок (по группам — всегда все три), ошибки/пропуски.
+    manifest.json в export/deals.
+
+    Контракт: КАЖДЫЙ архив — полный актуальный снимок CRM
+    (export_type = FULL_SNAPSHOT, is_complete = true). update_mode лишь
+    указывает СПОСОБ получения данных из Bitrix (FULL / INCREMENTAL),
+    архив дельтой не является никогда.
     """
     deal_ids = sorted(d["deal_id"] for g in groups_index.values() for d in g)
     files_count = len(deal_ids)
     period_from, period_to = ctx.period
     incremental = incremental or {}
+    creates = [d.get("date_create") for g in groups_index.values()
+               for d in g if d.get("date_create")]
+    countries = sorted({d.get("country") for g in groups_index.values()
+                        for d in g if d.get("country")})
     manifest = {
         "export_id": ctx.export_id,
-        "export_type": incremental.get("export_type", "full"),
+        "export_type": "FULL_SNAPSHOT",
+        "is_complete": True,
         "schema_version": ctx.schema_version,
         "snapshot_at": self_iso(ctx.started),
-        "country": config.FILE_COUNTRY,
-        "pipelines": pipelines,
-        "period": {"from": period_from, "to": period_to},
+        # страны — из полей сделок (может быть несколько: РБ и РФ)
+        "countries": countries,
+        # --- техническая информация о способе сборки (не про состав архива)
+        "update_mode": incremental.get("update_mode", "FULL"),
         "previous_export_id": incremental.get("previous_export_id"),
         "previous_snapshot_at": incremental.get("previous_snapshot_at"),
         "changed_since": incremental.get("changed_since"),
         "overlap_from": incremental.get("overlap_from"),
+        # ---
+        "pipelines": pipelines,
+        "period": {"from": period_from, "to": period_to},
+        "coverage": {"from": min(creates) if creates else None,
+                     "to": self_iso(ctx.started)},
         "filter": filter_desc,
+        "total_deals": files_count,
+        "active_count": len(groups_index.get("active") or []),
+        "completed_count": len(groups_index.get("completed") or []),
+        "technical_count": len(groups_index.get("technical") or []),
         "files_count": files_count,
         "deal_ids": deal_ids,
         # все три группы описываются всегда, даже пустые
+        # reused — сколько сделок перенесено из store без переобработки
         "groups": {
             g: {"count": len(groups_index.get(g) or []),
+                "reused": sum(1 for d in (groups_index.get(g) or [])
+                              if d.get("reused")),
                 "deal_ids": sorted(d["deal_id"] for d in (groups_index.get(g) or []))}
             for g in ALL_GROUPS
         },
@@ -275,19 +358,21 @@ def self_iso(dt):
     return dt.isoformat(timespec="seconds")
 
 
-def make_deals_zip(ctx, pipelines):
+def make_deals_zip(ctx, pipelines, countries=None):
     """
     Запаковывает export/deals в
-    LEXS_SALES_RB_<PIPELINE|MULTI>_WEEK_<from>_<to>_SNAP_<snap>_schema-v<N>.zip
+    LEXS_SALES_<COUNTRY|MULTI>_<PIPELINE|ALL>_FULL_SNAP_<snap>_schema-v<N>.zip
+    Страна — из полей сделок; если в снимке несколько стран -> MULTI.
+    Каждый архив — ПОЛНЫЙ актуальный снимок (не дельта).
     Служебные файлы macOS (.DS_Store, ._*) в архив не попадают.
     """
     slugs = sorted({p["code"] for p in pipelines})
-    pipe_part = slugs[0] if len(slugs) == 1 else ("MULTI" if slugs else "ALL")
-    period_from, period_to = ctx.period
-    frm = period_from.replace("-", "")
-    to = period_to.replace("-", "")
-    name = (f"{config.FILE_BRAND}_SALES_{config.FILE_COUNTRY}_{pipe_part}"
-            f"_WEEK_{frm}_{to}_SNAP_{ctx.snap}_schema-v{ctx.schema_version}")
+    pipe_part = slugs[0] if len(slugs) == 1 else "ALL"
+    cs = sorted({c for c in (countries or []) if c})
+    country_part = cs[0] if len(cs) == 1 else ("MULTI" if cs
+                                               else config.FILE_COUNTRY)
+    name = (f"{config.FILE_BRAND}_SALES_{country_part}_{pipe_part}"
+            f"_FULL_SNAP_{ctx.snap}_schema-v{ctx.schema_version}")
     archive = os.path.join(config.EXPORT_DIR, name + ".zip")
     root = os.path.join(config.EXPORT_DIR, "deals")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
