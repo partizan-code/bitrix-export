@@ -45,28 +45,39 @@ def clean_text(text):
     return BB_RE.sub("", text).strip()
 
 
-def get_deal_chats(client, deal_id):
+def get_deal_chats(client, deal_id, entity_type="deal"):
     """
-    Чаты открытых линий, привязанные к сделке:
+    Чаты открытых линий, привязанные к сущности (deal/lead):
     [{'chat_id': 1763, 'channel': 'viber', 'connector_title': '...'}, ...]
     """
     try:
         rows = client.result("imopenlines.crm.chat.get", {
-            "CRM_ENTITY_TYPE": "deal",
+            "CRM_ENTITY_TYPE": entity_type,
             "CRM_ENTITY": int(deal_id),
             "ACTIVE_ONLY": "N",
         }) or []
     except BitrixError as e:
-        log.warning("Сделка %s: imopenlines.crm.chat.get: %s", deal_id, e)
+        log.warning("%s %s: imopenlines.crm.chat.get: %s",
+                    entity_type, deal_id, e)
         return []
     chats = []
+    skipped = 0
     for r in rows:
+        # у части сделок API отдаёт записи без CHAT_ID
+        # (битые/удалённые сессии открытых линий) — пропускаем
+        chat_id = r.get("CHAT_ID")
+        if not chat_id:
+            skipped += 1
+            continue
         conn = (r.get("CONNECTOR_ID") or "").lower()
         chats.append({
-            "chat_id": int(r["CHAT_ID"]),
+            "chat_id": int(chat_id),
             "channel": CONNECTOR_CHANNEL.get(conn, conn or "unknown"),
             "connector_title": r.get("CONNECTOR_TITLE") or conn,
         })
+    if skipped:
+        log.info("%s %s: привязок чатов без CHAT_ID: %d (пропущено)",
+                 entity_type, deal_id, skipped)
     return chats
 
 

@@ -4,24 +4,25 @@
 
 Схема касания:
 {
-  "deal_id": 1234,
-  "touchpoint_id": "call_991",
+  "deal_id": 1234,                  # ID сущности (для лидов — ID лида)
+  "touchpoint_id": "call_991",      # call_*|ol_*|comment_*|act_*|task_*|stage_*
   "timestamp": "2026-07-15T14:32:10+03:00",
-  "channel": "call|viber|telegram|whatsapp|email|comment|meeting|...",
-  "event_type": "call|message|comment|email|meeting|stage_change",
-  "direction": "in|out|internal|null",
-  "actor": {"type": "manager|client|bot|system", "user_id": 17, "name": "Иванов И.И."},
+  "channel": "call|viber|telegram|whatsapp|site_chat|...|comment|email|meeting|task|crm",
+  "event_type": "call|message|comment|email|meeting|task|stage_change",
+  "direction": "in|out|internal|unknown|null",
+  "actor": {"type": "manager|client|bot|system|unknown", "user_id": 17, "name": "Иванов И.И."},
   "responsible_user_id": 42,          # ответственный за сделку (для сравнения)
   "client": {"contact_id": 555, "name": "Петров П."},
   "deal_stage_at_time": {"stage_id": "...", "name": "..."},
   "content": {
-      "type": "text|transcript",
+      "type": "text|transcript|meta",
       "text": "...",
       "duration_sec": 143,            # только звонки
-      "recording_url": "...",         # только звонки
-      "transcript_status": "builtin|whisper|no_recording|no_transcript|pending"
+      "recording_url": null,          # только звонки (всегда null)
+      "transcript_status": "builtin|assemblyai|whisper|no_recording|no_transcript|pending"
   },
-  "source": {"activity_id": ..., "stat_id": ..., "chat_id": ..., "message_id": ...}
+  "source": {"activity_id": ..., "chat_id": ..., "message_id": ...,
+             "comment_id": ..., "task_id": ..., "file_ids": [...]}
 }
 """
 

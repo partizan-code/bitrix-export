@@ -67,7 +67,7 @@ def _duration_from_times(start, end):
 
 
 # ------------------------------------------------------------------ звонки
-def get_deal_calls(client, deal_id, date_from=None):
+def get_deal_calls(client, deal_id, date_from=None, owner_type=2):
     """
     Все звонки сделки — как CRM-активности (TYPE_ID=2).
 
@@ -77,7 +77,8 @@ def get_deal_calls(client, deal_id, date_from=None):
     - RESPONSIBLE_ID активности = сотрудник, который фактически говорил;
     - записи разговоров лежат в FILES активности (id файлов Диска).
     """
-    flt = {"OWNER_TYPE_ID": 2, "OWNER_ID": int(deal_id), "TYPE_ID": 2}
+    flt = {"OWNER_TYPE_ID": owner_type, "OWNER_ID": int(deal_id),
+           "TYPE_ID": 2}
     if date_from or config.DATE_FROM:
         flt[">=START_TIME"] = date_from or config.DATE_FROM
     acts = client.call_list("crm.activity.list", {
@@ -181,14 +182,14 @@ def normalize_call(act):
 
 
 # ------------------------------------------------------------------ письма / встречи
-def get_activities(client, deal_id, type_ids):
-    """Активности сделки заданных типов (1 встреча, 3 письмо)."""
+def get_activities(client, deal_id, type_ids, owner_type=2):
+    """Активности сущности заданных типов (1 встреча, 3 письмо)."""
     if not type_ids:
         return []
     return client.call_list("crm.activity.list", {
         "order": {"CREATED": "ASC"},
         "filter": {
-            "OWNER_TYPE_ID": 2,  # сделка
+            "OWNER_TYPE_ID": owner_type,  # 2 сделка, 1 лид
             "OWNER_ID": int(deal_id),
             "@TYPE_ID": list(type_ids),
         },
@@ -203,10 +204,10 @@ def get_activities(client, deal_id, type_ids):
 
 
 # ------------------------------------------------------------------ комментарии
-def get_timeline_comments(client, deal_id):
-    """Комментарии менеджеров в таймлайне сделки."""
+def get_timeline_comments(client, deal_id, entity_type="deal"):
+    """Комментарии менеджеров в таймлайне сущности (deal/lead)."""
     return client.call_list("crm.timeline.comment.list", {
         "order": {"CREATED": "ASC"},
-        "filter": {"ENTITY_ID": int(deal_id), "ENTITY_TYPE": "deal"},
+        "filter": {"ENTITY_ID": int(deal_id), "ENTITY_TYPE": entity_type},
         "select": ["ID", "ENTITY_ID", "ENTITY_TYPE", "COMMENT", "AUTHOR_ID", "CREATED"],
     })

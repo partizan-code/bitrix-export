@@ -50,7 +50,7 @@ def format_user_name(u):
 def load_users(client):
     """Полная карта {user_id: {'name': ..., 'position': ...}}."""
     try:
-        raw = client.call_list("user.get", {"filter": {"ACTIVE": True}})
+        raw = client.call_list("user.get")
     except Exception:
         # на части порталов user.get не принимает filter — берём всех
         raw = client.call_list("user.get")
@@ -63,6 +63,64 @@ def load_users(client):
         }
     _save_json(os.path.join(config.DATA_DIR, "users_cache.json"), users)
     return users
+
+
+class LazyUserMap(dict):
+    """
+    users_map с дозапросом неизвестных ID.
+
+    Обычная карта содержит только то, что вернул user.get при загрузке.
+    Если в поле встретился user_id, которого в карте нет (уволен до того,
+    как его успели подтянуть, бот, пользователь экстранета), делаем
+    точечный user.get по ID и кэшируем результат в data/users_extra.json.
+    Неразрешимые ID тоже кэшируются (список missing) — повторных запросов
+    к API по ним не будет.
+    """
+
+    def __init__(self, client, base):
+        super().__init__(base or {})
+        self.client = client
+        self.path = os.path.join(config.DATA_DIR, "users_extra.json")
+        cache = _load_json(self.path, {})
+        self.extra = {}
+        for k, v in (cache.get("resolved") or {}).items():
+            try:
+                self.extra[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+        self.update(self.extra)
+        self._missing = set(cache.get("missing") or [])
+
+    def get(self, uid, default=None):
+        try:
+            uid = int(uid)
+        except (TypeError, ValueError):
+            return default
+        rec = super().get(uid)
+        if rec is None and self.client is not None and uid not in self._missing:
+            rec = self._fetch(uid)
+        return rec if rec is not None else default
+
+    def _fetch(self, uid):
+        rec = None
+        try:
+            res = self.client.result("user.get", {"ID": uid})
+            u = res if isinstance(res, dict) and res.get("ID") else \
+                (res[0] if isinstance(res, list) and res else None)
+            if u:
+                rec = {"name": format_user_name(u),
+                       "position": u.get("WORK_POSITION") or ""}
+        except Exception:
+            rec = None
+        if rec:
+            self[uid] = self.extra[uid] = rec
+        else:
+            self._missing.add(uid)
+        _save_json(self.path, {
+            "resolved": {str(k): v for k, v in self.extra.items()},
+            "missing": sorted(self._missing),
+        })
+        return rec
 
 
 def user_name(users_map, uid):
@@ -148,6 +206,13 @@ def load_sources(client):
     sources = load_status_book(client, "SOURCE")
     _save_json(os.path.join(config.DATA_DIR, "sources.json"), sources)
     return sources
+
+
+def load_lead_statuses(client):
+    """Статусы лидов (STATUS_ID -> название), кэш data/lead_statuses.json."""
+    statuses = load_status_book(client, "STATUS")
+    _save_json(os.path.join(config.DATA_DIR, "lead_statuses.json"), statuses)
+    return statuses
 
 
 def source_name(sources_map, source_id):

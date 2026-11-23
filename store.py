@@ -8,11 +8,12 @@
 в новый снимок как есть. Store — единственное место, откуда берётся
 «прошлая жизнь» сделки; export/ остаётся стейджингом текущего снимка.
 
-Структура:
-  data/store/deals/<deal_id>.md     — последний сгенерированный протокол
-  data/store/tps/<deal_id>.jsonl    — касания сделки (последняя версия)
-  data/store/index/<deal_id>.json   — stats-запись для deals_index
-  data/store/deal/<deal_id>.json    — JSON сделки (нужен для имён файлов при переносе)
+Структура (сделки — в корне store, лиды — в подпапке lead/):
+  data/store/deals/<id>.md          — последний сгенерированный протокол
+  data/store/tps/<id>.jsonl         — касания (последняя версия)
+  data/store/index/<id>.json        — stats-запись для индекса
+  data/store/deal/<id>.json         — полный JSON сущности
+  data/store/lead/{deals,tps,index,deal}/<id>.*  — то же для лидов
 """
 
 import json
@@ -26,51 +27,58 @@ log = logging.getLogger("b24")
 _KINDS = ("deals", "tps", "index", "deal")
 
 
-def _dir(kind):
-    d = os.path.join(config.DATA_DIR, "store", kind)
+def _dir(kind, entity="deal"):
+    base = os.path.join(config.DATA_DIR, "store")
+    d = os.path.join(base, kind) if entity == "deal" \
+        else os.path.join(base, entity, kind)
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def _path(kind, deal_id):
+def _path(kind, deal_id, entity="deal"):
     ext = {"deals": ".md", "tps": ".jsonl", "index": ".json", "deal": ".json"}[kind]
-    return os.path.join(_dir(kind), f"{int(deal_id)}{ext}")
+    return os.path.join(_dir(kind, entity), f"{int(deal_id)}{ext}")
 
 
-def save_deal(deal, md_path, touchpoints, stats):
-    """Сохранить артефакты обработанной сделки в store (перезапись)."""
-    did = int(deal["ID"])
+def save_deal(deal, md_path, touchpoints, stats, entity="deal"):
+    """Сохранить артефакты обработанной сущности в store (перезапись)."""
     with open(md_path, "r", encoding="utf-8") as f:
         md_text = f.read()
-    with open(_path("deals", did), "w", encoding="utf-8") as f:
+    save_artifacts(deal, md_text, touchpoints, stats, entity=entity)
+
+
+def save_artifacts(deal, md_text, touchpoints, stats, entity="deal"):
+    """Перезаписать артефакты сущности напрямую (без чтения md с диска)."""
+    did = int(deal["ID"])
+    with open(_path("deals", did, entity), "w", encoding="utf-8") as f:
         f.write(md_text)
-    with open(_path("tps", did), "w", encoding="utf-8") as f:
+    with open(_path("tps", did, entity), "w", encoding="utf-8") as f:
         for tp in touchpoints:
             f.write(json.dumps(tp, ensure_ascii=False) + "\n")
-    with open(_path("index", did), "w", encoding="utf-8") as f:
+    with open(_path("index", did, entity), "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=1)
-    with open(_path("deal", did), "w", encoding="utf-8") as f:
+    with open(_path("deal", did, entity), "w", encoding="utf-8") as f:
         json.dump(deal, f, ensure_ascii=False, default=str)
 
 
-def has_deal(deal_id):
-    """Полный набор артефактов сделки есть в store?"""
-    return all(os.path.exists(_path(k, deal_id)) for k in _KINDS)
+def has_deal(deal_id, entity="deal"):
+    """Полный набор артефактов сущности есть в store?"""
+    return all(os.path.exists(_path(k, deal_id, entity)) for k in _KINDS)
 
 
-def load_deal(deal_id):
-    with open(_path("deal", deal_id), "r", encoding="utf-8") as f:
+def load_deal(deal_id, entity="deal"):
+    with open(_path("deal", deal_id, entity), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def load_md(deal_id):
-    with open(_path("deals", deal_id), "r", encoding="utf-8") as f:
+def load_md(deal_id, entity="deal"):
+    with open(_path("deals", deal_id, entity), "r", encoding="utf-8") as f:
         return f.read()
 
 
-def load_tps(deal_id):
+def load_tps(deal_id, entity="deal"):
     tps = []
-    with open(_path("tps", deal_id), "r", encoding="utf-8") as f:
+    with open(_path("tps", deal_id, entity), "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -78,6 +86,19 @@ def load_tps(deal_id):
     return tps
 
 
-def load_stats(deal_id):
-    with open(_path("index", deal_id), "r", encoding="utf-8") as f:
+def load_stats(deal_id, entity="deal"):
+    with open(_path("index", deal_id, entity), "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def stored_ids(entity="deal"):
+    """ID всех сущностей с полным набором артефактов в store."""
+    d = _dir("deal", entity)
+    out = []
+    for fn in os.listdir(d):
+        if fn.endswith(".json"):
+            try:
+                out.append(int(fn[:-5]))
+            except ValueError:
+                continue
+    return sorted(out)

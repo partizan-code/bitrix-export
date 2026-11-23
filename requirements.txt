@@ -1,2 +1,5 @@
 requests>=2.31
-python-dotenv>=1.2
+# опционально — чтение ключа AssemblyAI из .env:
+python-dotenv>=1.0
+# опционально — если TRANSCRIPTION_PROVIDER = "whisper":
+faster-whisper>=1.0

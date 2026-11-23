@@ -1,9 +1,10 @@
 # Выгрузка касаний Bitrix24 для анализа ИИ
 
-Собирает по каждой сделке **все каналы общения в одну хронологическую ленту**:
+Собирает по каждой сделке и каждому лиду **все каналы общения в одну хронологическую ленту**:
 звонки (с транскрипциями), переписки открытых линий (Viber / Telegram / WhatsApp и др.),
-комментарии таймлайна, смены стадий. В каждом касании фиксируется **тот, кто фактически
-вёл диалог** (оператор звонка, автор сообщения) — отдельно от ответственного за сделку.
+комментарии таймлайна, смены стадий, задачи, письма и встречи. В каждом касании фиксируется
+**тот, кто фактически вёл диалог** (оператор звонка, автор сообщения) — отдельно от
+ответственного за сделку.
 
 ## Установка
 
@@ -26,40 +27,161 @@ pip install -r requirements.txt
 Записи скачиваются только для состоявшихся разговоров длиннее
 `MIN_RECORDING_DURATION_SEC` (по умолчанию 15 сек).
 
+При `ASSEMBLYAI_DIRECT_URL = True` (по умолчанию) записи вообще **не скачиваются
+на диск**: AssemblyAI забирает их сам по подписанной ссылке Диска Битрикса
+(`disk.file.get` → `DOWNLOAD_URL`), при ошибке ссылки — автоматический fallback
+на скачивание + upload. Локальная копия хранится только в fallback-режиме;
+готовые транскрипции кэшируются в `transcripts/`, повторных запросов нет.
+
 ## Настройка
 
 1. В Bitrix24: **Настройки → Разработчикам → Другое → Входящий вебхук**.
-2. Права вебхука: **crm, im, imopenlines, telephony, user**.
-3. Подставьте URL вебхука в `config.py` (`WEBHOOK_URL`) или задайте переменную окружения `B24_WEBHOOK`.
+2. Права вебхука: **crm, im, imopenlines, telephony, user, task**
+   (`task` — для выгрузки задач по сделкам; без него задачи пропускаются с warning в логе).
+3. Задайте URL вебхука переменной окружения `B24_WEBHOOK` или пропишите его
+   в файле `.env` рядом с `config.py`.
 
 ## Запуск
 
 ```bat
 python sync.py --limit 3 --no-transcribe   :: быстрый тест структуры на 3 сделках
 python sync.py --deals 1234 5678           :: конкретные сделки
+python sync.py --leads 4321 8765           :: конкретные лиды
+python sync.py --leads --lead-limit 5      :: тест на 5 лидах
 python sync.py                             :: полная выгрузка
 python sync.py --skip-whisper              :: только штатные расшифровки Bitrix
 ```
 
-Объём и состав выгрузки настраиваются в `config.py` (`DATE_FROM`, `INCLUDE_EMAILS` и т.д.).
+Объём и состав выгрузки настраиваются в `config.py` (`DATE_FROM`, `INCLUDE_EMAILS`,
+`PROCESS_LEADS` и т.д.).
 
 ## Результат
 
-Сделки разделяются по завершённости (`PROCESS_ACTIVE` / `PROCESS_COMPLETED` в config.py):
+Сделки разделяются на три группы (`PROCESS_ACTIVE` / `PROCESS_COMPLETED` /
+`PROCESS_TECHNICAL` в config.py):
+
+- **active** — сделки в работе (`CLOSED = N`);
+- **completed** — завершённые (успех и отказ);
+- **technical** — технические финальные стадии (дубль / тест / мусор / ошибка).
+  Технический дубль **не считается проигранной продажей**, поэтому для расчёта
+  конверсии он выносится из completed отдельно. Правила классификации — в config.py:
+  `TECHNICAL_STAGE_IDS` (явный список ID стадий по воронкам) и
+  `TECHNICAL_STAGE_KEYWORDS` (слова в названии стадии: «дубль», «тест», «мусор»…).
 
 | Путь | Содержимое |
 |---|---|
-| `export/touchpoints_active.jsonl` | Касания по активным сделкам (строка = касание) |
-| `export/touchpoints_completed.jsonl` | Касания по завершённым сделкам |
-| `export/deals/active/deal_<id>.md` | Протоколы активных сделок (контекст для LLM) |
-| `export/deals/completed/deal_<id>.md` | Протоколы завершённых сделок |
-| `export/deals_index_active/completed.jsonl` | Индекс + все поля сделки |
-| `raw/deal_<id>.json` | Сырой JSON из API (пересборка без повторных запросов) |
+| `export/snapshot/manifest.json` | Манифест снимка (см. ниже) |
+| `export/snapshot/Сделки/Активные\|Завершенные\|Технические/` | Протоколы сделок по группам |
+| `export/snapshot/Лиды/Активные\|Завершенные\|Технические/` | Протоколы лидов по группам |
+| `export/LEXS выгрузка из Битрикс24 на дату ГГГГ-ММ-ДД ЧЧ-ММ.zip` | Итоговый архив: `snapshot/` 1:1 (все 6 папок — всегда, даже пустые) |
+| `export/touchpoints_<deal\|lead>_<group>.jsonl` | Касания (строка = касание); в архив НЕ попадают |
+| `export/index_<deal\|lead>_<group>.jsonl` | Индекс + все поля; в архив НЕ попадают |
+| `raw/<deal\|lead>_<id>.json` | Сырой JSON из API (пересборка без повторных запросов) |
+| `data/store/` | Постоянное хранилище артефактов сущностей (карточки, касания, индексы) |
+| `data/registry.json` | Реестр выгруженных сделок и лидов (переиспользование без переобработки) |
 | `transcripts/`, `audio/` | Тексты транскрипций и записи звонков |
 
-Выгружаются **все поля сделки** (стандартные + `UF_*`). Значения полей-списков
-резолвятся в названия через метаданные (`crm.deal.fields` + `crm.deal.userfield.list`,
-кэш — `data/deal_fields_meta.json`). В markdown-протоколе поля — секцией «Поля сделки».
+**Манифест** (`manifest.json` в корне архива): `export_type=FULL_SNAPSHOT`,
+`is_complete` / `status` (см. ниже), `schema_version`, `snapshot_at` +
+`snapshot_timezone`, `countries`, `coverage` (от самого старого объекта до
+даты снимка), воронки, фильтр, тех. информация о сборке (`update_mode`,
+`previous_*`, `changed_since`, `overlap_from`) и **отдельные блоки `deals`
+и `leads`**: `total`, `active/completed/technical_count`, список ID,
+`groups` (count/reused/ids — все три группы всегда, даже пустые),
+`errors_count` + `errors`.
+
+**Полнота снимка.** `is_complete = true` только если выгружены все
+требуемые объекты без ошибок. Если часть объектов не выгружена из-за
+ошибок — `is_complete = false`, `status = "partial"`, а ошибки перечислены
+в блоках `deals.errors` / `leads.errors` и в совокупном `errors`.
+
+**Единое время снимка.** `snapshot_at`, метки `SNAP_...` в именах карточек
+и дата-время в имени ZIP формируются из одного момента в поясе
+`SNAPSHOT_TZ` (по умолчанию `Europe/Minsk`) — расхождения исключены.
+
+**Принцип: один актуальный полный архив.** Каждый запуск формирует НОВЫЙ ПОЛНЫЙ
+снимок всей истории CRM (active + completed + technical целиком). Самый свежий
+архив — единственный источник актуального состояния для анализа; предыдущие
+архивы — исторические снимки (ретроспектива, расследования). Данные из Bitrix
+могут собираться инкрементально (`update_mode: INCREMENTAL` — только новые и
+изменившиеся сделки), но ZIP никогда не является дельтой:
+`export_type = FULL_SNAPSHOT`, `is_complete = true`.
+
+**Формат снимка** (версия схемы — `SCHEMA_VERSION` в config.py):
+
+- файл сделки: `LEXS_DEAL_RB_<PIPELINE>_<ID>_SNAP_<YYYYMMDD>T<HHMMSS><TZ>_schema-vN.md`
+  (`LEXS_DEAL_RB_KUHNI-ON-OFF_53058_SNAP_20260804T183337+0300_schema-v2.md`);
+- файл лида: `LEXS_LEAD_RB_<ID>_SNAP_<...>_schema-vN.md` (воронки у лидов нет);
+- архив: `LEXS выгрузка из Битрикс24 на дату ГГГГ-ММ-ДД ЧЧ-ММ.zip`
+  (шаблон — `ZIP_NAME_TEMPLATE`; служебные файлы macOS `.DS_Store` / `._*`
+  в архив не попадают);
+- префикс бренда настраивается (`FILE_BRAND`). **Страна — из поля сделки/лида**
+  («Страна»: РБ→`RB`, РФ→`RF`): автоопределение по названию поля или явный код
+  в `COUNTRY_FIELD`; `FILE_COUNTRY` — запасной вариант, если поля нет
+  (по умолчанию `RB`). В манифесте — список `countries`, в имени файла
+  каждой сущности — её собственный код.
+
+**Лиды** (`PROCESS_LEADS = True`). Пайплайн зеркалит сделки: те же три
+группы, касания (звонки/чаты/комментарии/задачи/история статусов),
+кумулятивные снимки и переиспользование из store без переобработки.
+Классификация: **Активные** — в работе (семантика P); **Завершенные** —
+ВСЕ закрытые (успех/конверсия S и провал F), кроме технических;
+**Технические** — брак/мусор/дубли: `LEAD_TECHNICAL_STATUS_IDS` или
+ключевые слова `LEAD_TECHNICAL_STATUS_KEYWORDS` в названии статуса.
+Тест лидов: `--leads 111 222` / `--lead-limit 5` (тестовый прогон сделок
+лиды не трогает, пока их явно не попросить).
+**Фильтр сделок по датам.** Основной фильтр — `DATE_FROM` (`>=DATE_CREATE`),
+он виден в логе строкой `Фильтр crm.deal.list: ...`. Дополнительно можно задать
+**обе** границы `EXPORT_PERIOD_FROM` / `EXPORT_PERIOD_TO` — тогда добавляется
+верхняя граница `<=DATE_CREATE` = TO 23:59:59 (одна одиночная граница
+игнорируется). `DATE_FROM` имеет приоритет над началом периода. Применённый
+фильтр фиксируется в манифесте (`filter.date_from`, `filter.period_filter`),
+а лимит сделок — полями `filter.deals_limit` и `filter.limit_reached`
+(`true`, если выборка уперлась в `DEALS_LIMIT` и, возможно, неполная).
+Фактический охват снимка — поле `coverage` манифеста: от `DATE_CREATE` самой
+старой сделки пакета до даты снимка.
+
+**Недельная инкрементальная выгрузка** (`EXPORT_TYPE = "auto"`, по умолчанию).
+Если есть предыдущий снимок (`data/state.json`), проход работает инкрементально:
+
+- **ALL ACTIVE** — все сделки в работе выгружаются целиком (свежий срез);
+- **CHANGED SINCE PREVIOUS SNAPSHOT** — всё с `DATE_MODIFY` ≥ (прошлый снимок −
+  `INCREMENTAL_OVERLAP_HOURS` ч): новые, изменённые, закрытые за неделю и
+  технические. Дубли между двумя запросами убираются по ID.
+
+`DATE_FROM` (если задан) действует в обоих режимах: ограничивает выборку по
+дате создания, в т.ч. ветку ALL ACTIVE. Для полного ALL ACTIVE без ограничений
+оставьте `DATE_FROM = None`.
+
+**Каждый архив — кумулятивный.** Анализ всегда ведётся по последнему архиву,
+поэтому в него входят ВСЕ сделки: активные (свежий срез), изменённые за неделю
+и все закрытые/технические прошлых недель. При этом закрытые неизменные сделки
+**не переобрабатываются**: реестр `data/registry.json` помечает выгруженные
+сделки, а готовые артефакты (markdown, касания, индекс) лежат в постоянном
+хранилище `data/store/` и просто копируются в новый снимок под его именем —
+без запросов активностей к API, без скачивания аудио, без транскрибаций
+(дополнительно тексты кэшируются в `transcripts/`, записи — в `audio/`).
+Сделка обрабатывается заново только если: она активна; изменилась после
+прошлой выгрузки (при `REEXPORT_CLOSED_ON_CHANGE = True`); артефактов нет
+в store; или подняли `SCHEMA_VERSION` (перегенерация по новой схеме).
+В манифесте `groups.<группа>.reused` — сколько сделок перенесено из store.
+Сделки, упавшие с ошибкой, в реестр не попадают: их ID пишутся в `state.json`
+и автоматически повторяются при следующем запуске — из кумулятивных архивов
+они не теряются.
+
+Первая выгрузка всегда полная (`full`) и создаёт `state.json` — точку отсчёта
+для следующих. `EXPORT_TYPE = "full"` принудительно отключает инкремент;
+тестовый запуск (`--deals`, `--limit`, `DEAL_IDS`, `DEALS_LIMIT`) тоже всегда
+полный и не обновляет якорь. Связка снимков фиксируется в manifest:
+`export_type`, `previous_export_id`, `previous_snapshot_at`, `changed_since`,
+`overlap_from`. Все три группы (`active` / `completed` / `technical`)
+описываются в `manifest.groups` всегда — даже пустые.
+
+Выгружаются **все поля сделки и лида** (стандартные + `UF_*`). Значения
+полей-списков резолвятся в названия через метаданные (`crm.deal.fields` /
+`crm.lead.fields`, кэши — `data/deal_fields_meta.json` и
+`data/lead_fields_meta.json`). В markdown-протоколе поля — секцией
+«Поля сделки» / «Поля лида».
 
 ## Схема касания (touchpoints.jsonl)
 
@@ -68,29 +190,65 @@ python sync.py --skip-whisper              :: только штатные рас
   "deal_id": 1234,
   "touchpoint_id": "call_991",
   "timestamp": "2026-07-15T14:32:10+03:00",
-  "channel": "call | viber | telegram | whatsapp | email | comment | meeting",
-  "event_type": "call | message | comment | email | meeting | stage_change",
-  "direction": "in | out | internal",
-  "actor": {"type": "manager | client | bot | system", "user_id": 17, "name": "Иванов И.И."},
+  "channel": "call | viber | telegram | whatsapp | site_chat | ... | comment | email | meeting | task | crm",
+  "event_type": "call | message | comment | email | meeting | task | stage_change",
+  "direction": "in | out | internal | unknown | null",
+  "actor": {"type": "manager | client | bot | system | unknown", "user_id": 17, "name": "Иванов И.И."},
   "responsible_user_id": 42,
   "client": {"contact_id": 555, "name": "Петров П."},
   "deal_stage_at_time": {"stage_id": "C1:PREPARATION", "name": "Подготовка"},
   "content": {"type": "transcript", "text": "...", "duration_sec": 143,
-              "recording_url": "...", "transcript_status": "builtin | whisper | ..."},
-  "source": {"activity_id": 7739, "stat_id": 991}
+              "recording_url": null,
+              "transcript_status": "builtin | assemblyai | whisper | no_recording | no_transcript | pending"},
+  "source": {"activity_id": 7739, "file_ids": [512]}
 }
 ```
 
+- `deal_id` — ID сущности: для сделок — ID сделки, для лидов — ID лида.
+- `channel` — для открытых линий код канала (`viber`, `telegram`, `whatsapp`,
+  `site_chat`, `vk`, `instagram`, `facebook`, `avito`, `olx`, …); `crm` — смена
+  стадий; `task` — задачи.
+- `touchpoint_id` — `call_<activity_id>`, `ol_<chat_id>_<msg_id>`,
+  `comment_<id>`, `act_<id>`, `task_<id>`, `stage_<i>_<stage_id>`.
+- `source` — привязка к источнику: `activity_id` / `chat_id` + `message_id` /
+  `comment_id` / `task_id`, `file_ids` для записей звонков.
+
 ## Как решается «кто вёл диалог»
 
-- **Звонок** → `PORTAL_USER_ID` из статистики телефонии (оператор звонка);
+- **Звонок** → `RESPONSIBLE_ID` активности звонка (кто фактически говорил);
 - **Сообщение ОЛ** → `senderid` каждого сообщения, резолв через справочник пользователей;
-- **Комментарий/письмо** → `AUTHOR_ID`.
+- **Комментарий/письмо/встреча** → `AUTHOR_ID`;
+- **Задача** → `RESPONSIBLE_ID` задачи (исполнитель);
+- **Смена стадии** → `system`.
 Поле `actor` — фактический участник; `responsible_user_id` — ответственный, для сравнения.
 
 ## Источники данных (REST API)
 
-`crm.deal.list` · `crm.stagehistory.list` (стадии) · `crm.activity.list` TYPE_ID=2 (звонки,
-работает с любой телефонией) · `disk.file.get` (записи разговоров из FILES активности) ·
-`crm.activity.call.getTranscript` (штатная расшифровка) · `imopenlines.crm.chat.get` +
-`imopenlines.session.history.get` (чаты) · `crm.timeline.comment.list` · `user.get` (справочник)
+`crm.deal.list` / `crm.lead.list` · `crm.stagehistory.list` (стадии/статусы) ·
+`crm.activity.list` TYPE_ID=2 (звонки, работает с любой телефонией;
+OWNER_TYPE_ID 2=сделка, 1=лид) · `disk.file.get` (записи разговоров из FILES
+активности) · `crm.activity.call.getTranscript` (штатная расшифровка) ·
+`imopenlines.crm.chat.get` + `imopenlines.session.history.get` (чаты) ·
+`crm.timeline.comment.list` · `tasks.task.list` по `UF_CRM_TASK=D_<id>` / `L_<id>`
+(задачи) · `crm.deal.fields` / `crm.lead.fields` (метаданные полей) ·
+`crm.status.list` ENTITY_ID=STATUS (статусы лидов) · `user.get` (справочник
+пользователей)
+
+## Служебные скрипты
+
+- `refresh_names.py` — обновить имена (ответственный/менеджеры/поля-сотрудники)
+  в уже сохранённых протоколах store и перепаковать новый архив
+  БЕЗ переобработки (ни активностей, ни аудио, ни транскрибаций).
+  Актуально после увольнения сотрудников: имена уволенных появятся, если
+  `users.load_users` возвращает всех пользователей (без фильтра ACTIVE).
+  `--offline` — справочники из кэшей `data/*.json`.
+- `recover_registry.py` — восстановить `data/registry.json` из store после
+  прерванного прогона (сделки и лиды).
+- `diag_filter.py`, `diag_fields.py` — диагностика фильтров и полей портала.
+
+## Дополнительно
+
+- `AGENTS.md` — инструкции для AI-агентов, работающих с этим репозиторием
+  (архитектура, соглашения по коду, тестирование, безопасность).
+- `wiki/` — поддерживаемая база знаний проекта (концепты, решения, runbook);
+  точка входа — `wiki/overview.md` и `wiki/index.md`.

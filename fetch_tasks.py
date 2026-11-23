@@ -19,16 +19,19 @@ TASK_SELECT = [
 ]
 
 
-def get_deal_tasks(client, deal_id):
-    """Все задачи, привязанные к сделке (по возрастанию даты создания)."""
+def get_deal_tasks(client, deal_id, prefix="D"):
+    """
+    Все задачи, привязанные к сущности (по возрастанию даты создания).
+    prefix: "D" — сделка (D_<id>), "L" — лид (L_<id>).
+    """
     try:
         return client.call_list("tasks.task.list", {
             "order": {"CREATED_DATE": "ASC"},
-            "filter": {"UF_CRM_TASK": f"D_{int(deal_id)}"},
+            "filter": {"UF_CRM_TASK": f"{prefix}_{int(deal_id)}"},
             "select": TASK_SELECT,
         })
     except BitrixError as e:
-        log.warning("Сделка %s: tasks.task.list: %s", deal_id, e)
+        log.warning("%s_%s: tasks.task.list: %s", prefix, deal_id, e)
         return []
 
 

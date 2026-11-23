@@ -8,10 +8,13 @@
 """
 
 import json
+import logging
 import os
 
 import config
 from users import user_name
+
+log = logging.getLogger("b24")
 
 DEAL_SELECT = ["*", "UF_*"]  # все стандартные + пользовательские поля
 
@@ -51,6 +54,7 @@ def get_deals(client):
         deal = client.result("crm.deal.get", {"id": flt["@ID"][0]})
         return [deal] if deal else []
 
+    log.info("Фильтр crm.deal.list: %s", flt or "(без фильтра)")
     deals = client.call_list("crm.deal.list", {
         "order": {"ID": "ASC"},
         "filter": flt,
@@ -59,6 +63,20 @@ def get_deals(client):
     if config.DEALS_LIMIT:
         deals = deals[: config.DEALS_LIMIT]
     return deals
+
+
+def get_deals_by_ids(client, ids):
+    """Сделки по списку ID (повтор ранее упавших с ошибкой)."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return []
+    flt = {"@ID": ids}
+    log.info("Фильтр crm.deal.list: %s", flt)
+    return client.call_list("crm.deal.list", {
+        "order": {"ID": "ASC"},
+        "filter": flt,
+        "select": DEAL_SELECT,
+    })
 
 
 def get_deals_incremental(client, changed_since):
@@ -82,6 +100,7 @@ def get_deals_incremental(client, changed_since):
     def _pull(extra):
         flt = dict(base)
         flt.update(extra)
+        log.info("Фильтр crm.deal.list: %s", flt)
         rows = client.call_list("crm.deal.list", {
             "order": {"ID": "ASC"},
             "filter": flt,
@@ -142,6 +161,11 @@ TECH_TITLES = {
     "LAST_ACTIVITY_BY": "Автор последней активности",
     "LAST_COMMUNICATION_TIME": "Время последней коммуникации",
     "REPEAT_SALE_SEGMENT_ID": "Сегмент повторных продаж",
+    "IS_MANUAL_OPPORTUNITY": "Сумма задана вручную",
+    "IS_RETURN_CUSTOMER": "Повторный",
+    "IS_REPEATED_APPROACH": "Повторное обращение",
+    "OPENED": "Доступен для всех",
+    "CLOSED": "Закрыт",
 }
 
 
@@ -227,7 +251,7 @@ def resolve_deal_fields(deal, fields_meta, users_map=None,
             display = ", ".join(smap.get(str(v), str(v)) for v in vals)
         elif ftype == "crm_category" and category_map:
             display = category_map.get(str(value), str(value))
-        elif name == "STAGE_SEMANTIC_ID":
+        elif name in ("STAGE_SEMANTIC_ID", "STATUS_SEMANTIC_ID"):
             display = SEMANTIC_LABELS.get(str(value), value)
         elif ftype in ("employee", "user") and users_map:
             ids = value if isinstance(value, list) else [value]
@@ -245,13 +269,14 @@ def resolve_deal_fields(deal, fields_meta, users_map=None,
     return out
 
 
-def get_stage_history(client, deal_id):
+def get_stage_history(client, deal_id, entity_type_id=2):
     """
-    Хронология смены стадий сделки:
+    Хронология смены стадий/статусов сущности:
     [{'stage_id': 'NEW', 'time': '2026-07-10T09:15:00+03:00'}, ...] по возрастанию.
+    entity_type_id: 2 — сделка, 1 — лид.
     """
     rows = client.call_list("crm.stagehistory.list", {
-        "entityTypeId": 2,
+        "entityTypeId": entity_type_id,
         "order": {"ID": "ASC"},
         "filter": {"OWNER_ID": int(deal_id)},
         "select": ["ID", "STAGE_ID", "CREATED_TIME"],

@@ -106,16 +106,16 @@ def _aa_upload(path, headers):
     return r.json()["upload_url"]
 
 
-def _transcribe_assemblyai(path):
+def _transcribe_assemblyai_url(audio_url):
     """
-    Транскрибация через AssemblyAI с диаризацией.
+    Транскрибация через AssemblyAI с диаризацией по готовой ссылке
+    (upload_url после _aa_upload ИЛИ подписанный DOWNLOAD_URL Битрикса —
+    AssemblyAI скачивает аудио сам, без локальной копии).
     Возвращает текст вида:
         Спикер A: Здравствуйте, ...
         Спикер B: Да, слушаю вас.
     """
     headers = _aa_headers()
-    audio_url = _aa_upload(path, headers)
-
     payload = {
         "audio_url": audio_url,
         "speech_models": ["universal-3-5-pro", "universal-2"],
@@ -153,6 +153,11 @@ def _transcribe_assemblyai(path):
             for u in utterances
         )
     return (res.get("text") or "").strip()
+
+
+def _transcribe_assemblyai(path):
+    """Классический путь: загрузить локальный файл в AssemblyAI, транскрибировать."""
+    return _transcribe_assemblyai_url(_aa_upload(path, _aa_headers()))
 
 
 # ================================================================== Faster Whisper
@@ -211,15 +216,59 @@ def transcribe_file(path):
     raise ValueError(f"Неизвестный TRANSCRIPTION_PROVIDER: {provider!r}")
 
 
+def transcript_path(deal_id, call):
+    """Путь к файлу транскрипции звонка в кэше transcripts/."""
+    act_id = call.get("activity_id") or call.get("stat_id") or "x"
+    return os.path.join(config.TRANSCRIPTS_DIR, f"deal{deal_id}_call{act_id}.txt")
+
+
+def has_transcript(deal_id, call):
+    """Транскрипция звонка уже есть в кэше?"""
+    return os.path.exists(transcript_path(deal_id, call))
+
+
+def _transcribe_assemblyai_direct(client, call):
+    """
+    AssemblyAI забирает запись САМ по подписанной ссылке Диска Битрикса
+    (disk.file.get -> DOWNLOAD_URL): ничего не скачиваем на локальный диск.
+    """
+    info = get_disk_file(client, call["file_ids"][0])
+    url = resolve_file_url(client, info)
+    if not url:
+        raise RuntimeError(f"у файла {call['file_ids'][0]} нет DOWNLOAD_URL")
+    return _transcribe_assemblyai_url(url)
+
+
+def use_assemblyai_direct():
+    """Прямая транскрибация по ссылке включена и применима?"""
+    return ((config.TRANSCRIPTION_PROVIDER or "").lower() == "assemblyai"
+            and bool(getattr(config, "ASSEMBLYAI_DIRECT_URL", False)))
+
+
 def transcribe_call(client, deal_id, call):
     """
-    Полный цикл для одного звонка: взять запись (уже скачанную или скачать) ->
-    транскрибировать -> сохранить текст в transcripts/. Возвращает путь к .txt или None.
+    Полный цикл для одного звонка: взять запись -> транскрибировать ->
+    сохранить текст в transcripts/. Возвращает путь к .txt или None.
+    При ASSEMBLYAI_DIRECT_URL запись на диск вообще не скачивается —
+    AssemblyAI получает прямую ссылку (fallback: скачивание + upload).
     """
     act_id = call.get("activity_id") or call.get("stat_id") or "x"
-    txt_path = os.path.join(config.TRANSCRIPTS_DIR, f"deal{deal_id}_call{act_id}.txt")
+    txt_path = transcript_path(deal_id, call)
     if os.path.exists(txt_path):
         return txt_path
+
+    if use_assemblyai_direct() and call.get("file_ids"):
+        try:
+            text = _transcribe_assemblyai_direct(client, call)
+        except Exception as e:
+            log.warning("Сделка %s звонок %s: прямая ссылка не сработала (%s) "
+                        "— скачиваю и загружаю файлом", deal_id, act_id, e)
+        else:
+            if not text:
+                return None
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return txt_path
 
     audio_path = call.get("local_audio")
     if not audio_path:
