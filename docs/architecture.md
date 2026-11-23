@@ -4,7 +4,8 @@
 
 ## Поток и модули
 
-`sync.main` загружает справочники/state, выбирает режим, создаёт `ExportContext`
+`sync.main` отклоняет аргументы запуска; параметры берутся только из `config.py`.
+Затем загружает справочники/state, выбирает режим, создаёт `ExportContext`
 и очищает snapshot. Для каждой сущности `run_entity` выбирает обработку или
 перенос; `process_entity` собирает источники → нормализует → сохраняет raw,
 карточку, касания и индекс в store. Затем формируются групповые JSONL, manifest,
@@ -26,8 +27,8 @@ ZIP (если включён и результат непустой), прогр
 | [normalize.py](../normalize.py) | Схема касания, события стадий |
 | [store.py](../store.py), [registry.py](../registry.py) | Артефакты и переиспользование |
 | [export_llm.py](../export_llm.py) | JSONL, Markdown, manifest, ZIP, имена/время снимка |
-| [bot.py](../bot.py) | Подпроцесс CLI, прогресс и выдача ZIP в Telegram |
-| [logging_setup.py](../logging_setup.py) | Два файла Loguru, маскирование секретов, перехват warning/error библиотек, аварийное завершение CLI |
+| [bot.py](../bot.py) | Запуск `sync.py` без аргументов, прогресс и выдача ZIP в Telegram |
+| [logging_setup.py](../logging_setup.py) | Два файла Loguru, маскирование секретов, перехват warning/error библиотек, аварийное завершение процесса |
 
 Клиент повторяет сетевые сбои, HTTP 429, `QUERY_LIMIT_EXCEEDED` и
 `OPERATION_TIME_LIMIT` с экспоненциальной задержкой; прочие ошибки API и
@@ -52,6 +53,12 @@ ZIP (если включён и результат непустой), прогр
 | `export_llm.write_deals_index` | `(deals_meta, path=None)` |
 | `normalize.tp_from_ol_message` | `(deal, chat, msg, sender, history, stages_map)` |
 | `transcribe.resolve_file_url` | `(file_info)` |
+| `sync.resolve_transcript` | `(client, deal_id, call)` |
+
+Объект CLI-аргументов удалён также из `sync.run_entity` и `sync.process_entity`.
+Транскрибация управляется `PREFER_BUILTIN_TRANSCRIPT` и `TRANSCRIBE_ENABLED`.
+Обёртка `logging_setup.run_cli` сохранена для логирования и кодов завершения
+бота, выгрузки и служебных скриптов.
 
 Все вызовы в основном потоке и утилитах обслуживания обновлены. Внешние
 скрипты, использующие прежние позиционные аргументы, нужно привести к этим

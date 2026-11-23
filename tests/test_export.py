@@ -453,8 +453,8 @@ class ExportTests(unittest.TestCase):
         finally:
             SANDBOX = None
 
-    def run_sync(self, *args):
-        with patch.object(sys, "argv", ["sync.py", *args]):
+    def run_sync(self):
+        with patch.object(sys, "argv", ["sync.py"]):
             self.sync.main()
         return self.read_json("export/snapshot/manifest.json")
 
@@ -872,13 +872,39 @@ class ExportTests(unittest.TestCase):
         ]
         self.assertEqual(retries, ["crm.deal.list", "crm.lead.list"])
 
-    def test_cli_limits_do_not_change_state_or_registry(self):
+    def test_arguments_are_rejected_before_api_or_export(self):
+        for arguments in (
+            ["--limit", "1"],
+            ["--lead-limit", "1"],
+            ["--deals", "1"],
+            ["--leads", "1"],
+            ["--no-transcribe"],
+            ["--skip-transcribe"],
+            ["--help"],
+            ["unexpected"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(sys, "argv", ["sync.py", *arguments]),
+                self.assertRaisesRegex(SystemExit, "не принимает аргументы"),
+            ):
+                self.sync.main()
+        self.sync.B24Client.assert_not_called()
+        self.assertEqual(self.cfg.DEAL_IDS, [])
+        self.assertEqual(self.cfg.LEAD_IDS, [])
+        self.assertEqual(self.cfg.DEALS_LIMIT, 0)
+        self.assertEqual(self.cfg.LEADS_LIMIT, 0)
+        self.assertFalse(list(self.root.rglob("*.json")))
+
+    def test_config_limits_do_not_change_state_or_registry(self):
         self.run_sync()
         before = {
             p: (self.root / p).read_bytes()
             for p in ("data/state.json", "data/registry.json")
         }
-        manifest = self.run_sync("--limit", "1", "--lead-limit", "1", "--no-transcribe")
+        self.cfg.DEALS_LIMIT = self.cfg.LEADS_LIMIT = 1
+        self.cfg.TRANSCRIBE_ENABLED = self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
+        manifest = self.run_sync()
         self.assertEqual(manifest["update_mode"], "FULL")
         self.assertEqual(manifest["deals"]["total"], 1)
         self.assertEqual(manifest["leads"]["total"], 1)
@@ -893,21 +919,36 @@ class ExportTests(unittest.TestCase):
         )
 
     def test_deal_ids_skip_leads_without_explicit_lead_limit(self):
-        manifest = self.run_sync("--deals", "1", "--no-transcribe")
+        self.cfg.DEAL_IDS = [1]
+        self.cfg.TRANSCRIBE_ENABLED = self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
+        manifest = self.run_sync()
         self.assertEqual(manifest["deals"]["total"], 1)
         self.assertEqual(manifest["leads"]["total"], 0)
         self.assertFalse((self.root / "data/state.json").exists())
         self.assertFalse((self.root / "data/registry.json").exists())
 
-    def test_cli_skip_transcribe_preserves_builtin_and_skips_external(self):
+    def test_config_lead_ids_enable_leads_in_limited_deal_run(self):
+        self.cfg.DEAL_IDS = [1]
+        self.cfg.LEAD_IDS = [2]
+        manifest = self.run_sync()
+        self.assertEqual(manifest["update_mode"], "FULL")
+        self.assertEqual(manifest["deals"]["total"], 1)
+        self.assertEqual(manifest["leads"]["total"], 1)
+        self.assertTrue(self.sync.store.has_deal(2, entity="lead"))
+        self.assertFalse((self.root / "data/state.json").exists())
+        self.assertFalse((self.root / "data/registry.json").exists())
+
+    def test_config_disables_external_transcription_and_preserves_builtin(self):
+        self.cfg.DEAL_IDS = [1]
+        self.cfg.TRANSCRIBE_ENABLED = False
         with patch.object(self.sync.transcribe, "transcribe_call") as external:
-            self.run_sync("--deals", "1", "--skip-transcribe")
+            self.run_sync()
             call = next(
                 t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
             )
             self.assertEqual(call["content"]["transcript_status"], "builtin")
             self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
-            self.run_sync("--deals", "1", "--skip-transcribe")
+            self.run_sync()
             call = next(
                 t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
             )
@@ -940,7 +981,8 @@ class ExportTests(unittest.TestCase):
 
     def test_chat_fallback_and_empty_group_directories(self):
         self.client.chat_fallback = True
-        self.run_sync("--limit", "1", "--lead-limit", "1")
+        self.cfg.DEALS_LIMIT = self.cfg.LEADS_LIMIT = 1
+        self.run_sync()
         md = self.sync.store.load_md(1)
         self.assertIn("Ответ клиента", md)
         with ZipFile(next((self.root / "export").glob("*.zip"))) as archive:
@@ -1032,22 +1074,21 @@ class ExportTests(unittest.TestCase):
                 self.assertTrue((self.root / "export/snapshot" / ent / group).is_dir())
 
     def test_transcript_missing_recording_disabled_and_failed(self):
-        args = types.SimpleNamespace(no_transcribe=False, skip_transcribe=False)
         self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
         self.assertEqual(
-            self.sync.resolve_transcript(self.client, 1, {}, args),
+            self.sync.resolve_transcript(self.client, 1, {}),
             {"text": None, "status": "no_recording"},
         )
         call = {"activity_id": "91", "file_ids": [501]}
         self.cfg.TRANSCRIBE_ENABLED = False
         self.assertEqual(
-            self.sync.resolve_transcript(self.client, 1, call, args)["status"],
+            self.sync.resolve_transcript(self.client, 1, call)["status"],
             "pending",
         )
         self.cfg.TRANSCRIBE_ENABLED = True
         with patch.object(self.sync.transcribe, "transcribe_call", return_value=None):
             self.assertEqual(
-                self.sync.resolve_transcript(self.client, 1, call, args)["status"],
+                self.sync.resolve_transcript(self.client, 1, call)["status"],
                 "no_transcript",
             )
 
@@ -1076,17 +1117,17 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(set(recovered), set(json.loads(before["data/registry.json"])))
         self.assertEqual(recovered["lead:2"]["exported_at"], "RECOVERED_FROM_STORE")
 
-    def test_transcript_flags_builtin_cache_and_assemblyai(self):
+    def test_transcript_settings_builtin_cache_and_assemblyai(self):
         call = {"activity_id": "91", "file_ids": [501]}
-        args = types.SimpleNamespace(no_transcribe=False, skip_transcribe=True)
-        builtin = self.sync.resolve_transcript(self.client, 1, call, args)
+        self.cfg.TRANSCRIBE_ENABLED = False
+        builtin = self.sync.resolve_transcript(self.client, 1, call)
         self.assertEqual(builtin["status"], "builtin")
         self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
         self.assertEqual(
-            self.sync.resolve_transcript(self.client, 1, call, args)["status"],
+            self.sync.resolve_transcript(self.client, 1, call)["status"],
             "pending",
         )
-        args.skip_transcribe = False
+        self.cfg.TRANSCRIBE_ENABLED = True
         self.cfg.ASSEMBLYAI_DIRECT_URL = False
         audio = self.root / "audio/synthetic.mp3"
         audio.write_bytes(b"synthetic")
@@ -1095,10 +1136,10 @@ class ExportTests(unittest.TestCase):
             self.sync.transcribe, "_transcribe_assemblyai", return_value="Текст"
         ) as mocked:
             self.assertEqual(
-                self.sync.resolve_transcript(self.client, 1, call, args),
+                self.sync.resolve_transcript(self.client, 1, call),
                 {"text": "Текст", "status": "assemblyai"},
             )
-            self.sync.resolve_transcript(self.client, 1, call, args)
+            self.sync.resolve_transcript(self.client, 1, call)
             mocked.assert_called_once()
 
     def test_direct_transcript_falls_back_to_file_upload(self):

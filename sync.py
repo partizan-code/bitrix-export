@@ -2,14 +2,8 @@
 """
 Оркестратор выгрузки (сделки + лиды).
 
-Запуск:
-    python sync.py                    # полный проход по config.py
-    python sync.py --limit 3          # тест на 3 сделках
-    python sync.py --deals 1234 5678  # конкретные сделки
-    python sync.py --leads 111 222    # конкретные лиды
-    python sync.py --lead-limit 5     # тест на 5 лидах
-    python sync.py --no-transcribe    # без транскрибации (только структура)
-    python sync.py --skip-transcribe  # без AssemblyAI, штатные расшифровки разрешены
+Запускается Telegram-ботом без аргументов; все параметры — в config.py.
+Ручной запуск тем же способом: python sync.py.
 
 Что делает за проход:
     сделки и лиды -> история стадий/статусов -> звонки (записи, транскрипции)
@@ -26,10 +20,10 @@
 нормализацию без повторных запросов к API.
 """
 
-import argparse
 import json
 import os
 import shutil
+import sys
 import time
 from datetime import datetime, timedelta
 
@@ -110,12 +104,9 @@ def _progress(**kw):
 
 
 # ---------------------------------------------------------------- транскрипция одного звонка
-def resolve_transcript(client, deal_id, call, args):
+def resolve_transcript(client, deal_id, call):
     """Возвращает {'text': str|None, 'status': ...} для звонка."""
     has_recording = bool(call.get("recording_url") or call.get("file_ids"))
-    if args.no_transcribe:
-        return {"text": None, "status": "pending" if has_recording else "no_recording"}
-
     # 1) штатная расшифровка Bitrix (CoPilot)
     if config.PREFER_BUILTIN_TRANSCRIPT:
         text = fetch_activities.get_builtin_transcript(client, call.get("activity_id"))
@@ -126,7 +117,7 @@ def resolve_transcript(client, deal_id, call, args):
         return {"text": None, "status": "no_recording"}
 
     # 2) внешняя транскрибация через AssemblyAI
-    if config.TRANSCRIBE_ENABLED and not args.skip_transcribe:
+    if config.TRANSCRIBE_ENABLED:
         txt_path = transcribe.transcribe_call(client, deal_id, call)
         if txt_path:
             with open(txt_path, "r", encoding="utf-8") as f:
@@ -143,7 +134,6 @@ def process_entity(
     users_map,
     stages_map,
     contacts,
-    args,
     group=None,
     ctx=None,
     pipeline_map=None,
@@ -182,7 +172,7 @@ def process_entity(
             and not transcribe.has_transcript(did, call)
         ):
             call["local_audio"] = transcribe.download_call_recording(client, did, call)
-        tr = resolve_transcript(client, did, call, args)
+        tr = resolve_transcript(client, did, call)
         touchpoints.append(
             normalize.tp_from_call(deal, call, users_map, history, stages_map, tr)
         )
@@ -292,7 +282,6 @@ def process_entity(
 def run_entity(
     entity,
     client,
-    args,
     ctx,
     books,
     prev_state,
@@ -413,7 +402,6 @@ def run_entity(
                 users_map,
                 stages_map,
                 contacts,
-                args,
                 group=group,
                 ctx=ctx,
                 pipeline_map=category_map,
@@ -580,31 +568,11 @@ def run_entity(
 
 # ---------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="Выгрузка касаний Bitrix24 для анализа ИИ")
-    ap.add_argument("--limit", type=int, default=0, help="не больше N сделок")
-    ap.add_argument("--deals", type=int, nargs="*", default=None, help="ID сделок")
-    ap.add_argument("--lead-limit", type=int, default=0, help="не больше N лидов")
-    ap.add_argument("--leads", type=int, nargs="*", default=None, help="ID лидов")
-    ap.add_argument(
-        "--no-transcribe",
-        action="store_true",
-        help="не брать транскрипции вообще (быстрая проверка структуры)",
-    )
-    ap.add_argument(
-        "--skip-transcribe",
-        action="store_true",
-        help="не запускать внешнюю транскрибацию (AssemblyAI)",
-    )
-    args = ap.parse_args()
-
-    if args.deals:
-        config.DEAL_IDS = args.deals
-    if args.limit:
-        config.DEALS_LIMIT = args.limit
-    if args.leads:
-        config.LEAD_IDS = args.leads
-    if args.lead_limit:
-        config.LEADS_LIMIT = args.lead_limit
+    if len(sys.argv) > 1:
+        raise SystemExit(
+            "sync.py не принимает аргументы. Задайте параметры в config.py "
+            "и запустите выгрузку кнопкой бота или командой python sync.py."
+        )
 
     # тестовый запуск (конкретные ID или лимит) — всегда полный режим
     # и не является якорем инкремента (state.json/registry не обновляются)
@@ -612,12 +580,12 @@ def main():
     lead_test = bool(config.LEAD_IDS or config.LEADS_LIMIT)
     is_test_run = deal_test or lead_test
     # защита от сюрприза: тестовый прогон сделок не запускает ПОЛНУЮ
-    # выгрузку лидов — лиды в тесте идут только при явном --leads/--lead-limit
+    # выгрузку лидов — лиды в тесте идут только при заданных LEAD_IDS/LEADS_LIMIT
     leads_enabled = config.PROCESS_LEADS and (not deal_test or lead_test)
     if config.PROCESS_LEADS and not leads_enabled:
         log.info(
             "Тестовый режим сделок: лиды пропускаю "
-            "(задайте --leads/--lead-limit для теста лидов)"
+            "(задайте LEAD_IDS/LEADS_LIMIT в config.py для теста лидов)"
         )
 
     client = B24Client()
@@ -766,7 +734,6 @@ def main():
     results["deals"] = run_entity(
         "deal",
         client,
-        args,
         ctx,
         books,
         prev_state,
@@ -778,7 +745,6 @@ def main():
         results["leads"] = run_entity(
             "lead",
             client,
-            args,
             ctx,
             books,
             prev_state,
@@ -891,7 +857,7 @@ def main():
 
     # state.json — якорь следующего инкрементального снимка,
     # registry.json — реестр выгруженных сущностей (защита от дублей закрытых).
-    # Тестовые запуски (--deals/--limit/--leads/--lead-limit) ни то ни другое
+    # Тестовые запуски (ID/лимиты в config.py) ни то ни другое
     # НЕ обновляют, иначе тесты сдвинули бы якорь и «засорили» реестр.
     if not is_test_run:
         with open(
