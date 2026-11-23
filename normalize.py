@@ -18,7 +18,7 @@
       "text": "...",
       "duration_sec": 143,            # только звонки
       "recording_url": null,          # только звонки (всегда null)
-      "transcript_status": "builtin|assemblyai|whisper|no_recording|no_transcript|pending"
+      "transcript_status": "builtin|assemblyai|no_recording|no_transcript|pending"
   },
   "source": {"activity_id": ..., "chat_id": ..., "message_id": ...,
              "comment_id": ..., "task_id": ..., "file_ids": [...]}

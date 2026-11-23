@@ -26,9 +26,8 @@ python -m venv venv
 python -m pip install -r requirements.txt
 ```
 
-`requests` обязателен; `python-dotenv` читает `.env`; `faster-whisper` нужен
-только Whisper, но включён в общий requirements. Whisper также требует `ffmpeg`
-в `PATH`. Бот имеет [отдельную зависимость](operations.md#telegram-бот).
+`requests` обязателен; `python-dotenv` читает `.env`.
+Бот имеет [отдельную зависимость](operations.md#telegram-бот).
 
 Создайте входящий вебхук Bitrix24 с правами `crm`, `im`, `imopenlines`,
 `telephony`, `user`; для задач добавьте `task`. Секреты задаются в окружении
@@ -54,7 +53,7 @@ python sync.py --limit 3 --no-transcribe
 python sync.py --deals 1234 5678
 python sync.py --leads 4321 8765
 python sync.py --limit 3 --lead-limit 3 --no-transcribe
-python sync.py --skip-whisper
+python sync.py --skip-transcribe
 ```
 
 | Аргумент | Действие |
@@ -63,7 +62,7 @@ python sync.py --skip-whisper
 | `--limit N` / `--deals ID ...` | Лимит / ID сделок на этот запуск |
 | `--lead-limit N` / `--leads ID ...` | Лимит / ID лидов на этот запуск |
 | `--no-transcribe` | Отключить все транскрипции, включая штатные |
-| `--skip-whisper` | Отключить AssemblyAI/Whisper; штатные возможны при `PREFER_BUILTIN_TRANSCRIPT=True` |
+| `--skip-transcribe` | Отключить AssemblyAI; штатные возможны при `PREFER_BUILTIN_TRANSCRIPT=True` |
 
 Непустые ID или ненулевые лимиты включают тестовый режим: `full` без сохранения
 state/registry. Он **вызывает API и пишет данные**: кэши, raw, store, новый
@@ -109,14 +108,12 @@ TO `23:59:59`. `DATE_FROM` заменяет начало периода, сох�
 ## Транскрибация
 
 Порядок в `sync.resolve_transcript`: `--no-transcribe` → штатная расшифровка
-при `PREFER_BUILTIN_TRANSCRIPT=True` → внешний провайдер при наличии записи,
-`TRANSCRIBE_ENABLED=True` и отсутствии `--skip-whisper`. Сейчас штатный приоритет
-выключен, внешний провайдер включён — `assemblyai`.
+при `PREFER_BUILTIN_TRANSCRIPT=True` → AssemblyAI при наличии записи,
+`TRANSCRIBE_ENABLED=True` и отсутствии `--skip-transcribe`. Сейчас штатный приоритет
+выключен, AssemblyAI включён.
 
 - AssemblyAI: ключ `ASSEMBLYAI_API_KEY`, язык `ru`, подсказка 2 спикера,
   опрос каждые 3 с, ожидание до 900 с. Настройки `ASSEMBLYAI_*`.
-- Whisper: локальная обработка, `WHISPER_MODEL="small"`,
-  `WHISPER_DEVICE="auto"`, `WHISPER_LANGUAGE="ru"`.
 
 `ASSEMBLYAI_DIRECT_URL=True` передаёт провайдеру авторизованный `DOWNLOAD_URL`
 Диска; локального аудио может не быть. При ошибке — скачивание и upload.

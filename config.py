@@ -116,9 +116,6 @@ FILE_COUNTRY = "RB"       # только запасной вариант, есл
 TRANSCRIBE_ENABLED = True
 PREFER_BUILTIN_TRANSCRIPT = False  # True — сначала брать штатную AI-расшифровку Bitrix
 
-# Провайдер: "assemblyai" (облако, с разделением спикеров) или "whisper" (локально)
-TRANSCRIPTION_PROVIDER = "assemblyai"
-
 # AssemblyAI. Ключ безопаснее задать переменной окружения ASSEMBLYAI_API_KEY
 # (или в файле .env рядом с config.py)
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "")
@@ -131,11 +128,6 @@ ASSEMBLYAI_TIMEOUT = 900       # максимум ожидания резуль�
 # При ошибке ссылки автоматически fallback на скачивание + upload.
 # False: классический путь (скачать в audio/ -> загрузить файлом).
 ASSEMBLYAI_DIRECT_URL = True
-
-# Faster Whisper (если TRANSCRIPTION_PROVIDER = "whisper")
-WHISPER_MODEL = "small"    # tiny / base / small / medium / large-v3
-WHISPER_DEVICE = "auto"    # auto / cpu / cuda
-WHISPER_LANGUAGE = "ru"
 
 # Запись звонка учитываем только для состоявшихся разговоров
 # длиннее MIN_RECORDING_DURATION_SEC — остальные игнорируются

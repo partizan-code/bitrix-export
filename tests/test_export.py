@@ -139,16 +139,12 @@ def make_config(root):
         "MIN_RECORDING_DURATION_SEC": 15,
         "TRANSCRIBE_ENABLED": True,
         "PREFER_BUILTIN_TRANSCRIPT": True,
-        "TRANSCRIPTION_PROVIDER": "assemblyai",
         "ASSEMBLYAI_DIRECT_URL": True,
         "ASSEMBLYAI_API_KEY": "synthetic",
         "ASSEMBLYAI_LANGUAGE": "ru",
         "ASSEMBLYAI_SPEAKERS": 2,
         "ASSEMBLYAI_POLL_INTERVAL": 0,
         "ASSEMBLYAI_TIMEOUT": 10,
-        "WHISPER_MODEL": "small",
-        "WHISPER_DEVICE": "cpu",
-        "WHISPER_LANGUAGE": "ru",
         "REQUEST_PAUSE": 0,
         "REQUEST_TIMEOUT": 1,
         "MAX_RETRIES": 3,
@@ -437,13 +433,6 @@ class ExportTests(unittest.TestCase):
         )
         self.stack.enter_context(patch("time.strftime", return_value=STAMP))
         self.stack.enter_context(patch("time.sleep"))
-        self.stack.enter_context(
-            patch.object(
-                self.sync.transcribe,
-                "_get_whisper_model",
-                side_effect=AssertionError("Загрузка модели запрещена"),
-            )
-        )
 
     def close_sandbox(self):
         global SANDBOX
@@ -657,6 +646,21 @@ class ExportTests(unittest.TestCase):
         self.assertFalse((self.root / "data/state.json").exists())
         self.assertFalse((self.root / "data/registry.json").exists())
 
+    def test_cli_skip_transcribe_preserves_builtin_and_skips_external(self):
+        with patch.object(self.sync.transcribe, "transcribe_call") as external:
+            self.run_sync("--deals", "1", "--skip-transcribe")
+            call = next(
+                t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
+            )
+            self.assertEqual(call["content"]["transcript_status"], "builtin")
+            self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
+            self.run_sync("--deals", "1", "--skip-transcribe")
+            call = next(
+                t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
+            )
+            self.assertEqual(call["content"]["transcript_status"], "pending")
+            external.assert_not_called()
+
     def test_disabled_groups_and_sources(self):
         self.cfg.PROCESS_TECHNICAL = False
         self.cfg.INCLUDE_COMMENTS = self.cfg.INCLUDE_TASKS = False
@@ -775,7 +779,7 @@ class ExportTests(unittest.TestCase):
                 self.assertTrue((self.root / "export/snapshot" / ent / group).is_dir())
 
     def test_transcript_missing_recording_disabled_and_failed(self):
-        args = types.SimpleNamespace(no_transcribe=False, skip_whisper=False)
+        args = types.SimpleNamespace(no_transcribe=False, skip_transcribe=False)
         self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
         self.assertEqual(
             self.sync.resolve_transcript(self.client, 1, {}, args),
@@ -819,9 +823,9 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(set(recovered), set(json.loads(before["data/registry.json"])))
         self.assertEqual(recovered["lead:2"]["exported_at"], "RECOVERED_FROM_STORE")
 
-    def test_transcript_flags_builtin_cache_and_providers(self):
+    def test_transcript_flags_builtin_cache_and_assemblyai(self):
         call = {"activity_id": "91", "file_ids": [501]}
-        args = types.SimpleNamespace(no_transcribe=False, skip_whisper=True)
+        args = types.SimpleNamespace(no_transcribe=False, skip_transcribe=True)
         builtin = self.sync.resolve_transcript(self.client, 1, call, args)
         self.assertEqual(builtin["status"], "builtin")
         self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
@@ -829,28 +833,20 @@ class ExportTests(unittest.TestCase):
             self.sync.resolve_transcript(self.client, 1, call, args)["status"],
             "pending",
         )
-        args.skip_whisper = False
-        for provider, method in (
-            ("assemblyai", "_transcribe_assemblyai"),
-            ("whisper", "_transcribe_whisper"),
-        ):
-            with self.subTest(provider=provider):
-                self.cfg.TRANSCRIPTION_PROVIDER = provider
-                self.cfg.ASSEMBLYAI_DIRECT_URL = False
-                path = Path(self.sync.transcribe.transcript_path(1, call))
-                path.unlink(missing_ok=True)
-                audio = self.root / "audio/synthetic.mp3"
-                audio.write_bytes(b"synthetic")
-                call["local_audio"] = str(audio)
-                with patch.object(
-                    self.sync.transcribe, method, return_value="Текст"
-                ) as mocked:
-                    self.assertEqual(
-                        self.sync.resolve_transcript(self.client, 1, call, args),
-                        {"text": "Текст", "status": provider},
-                    )
-                    self.sync.resolve_transcript(self.client, 1, call, args)
-                    mocked.assert_called_once()
+        args.skip_transcribe = False
+        self.cfg.ASSEMBLYAI_DIRECT_URL = False
+        audio = self.root / "audio/synthetic.mp3"
+        audio.write_bytes(b"synthetic")
+        call["local_audio"] = str(audio)
+        with patch.object(
+            self.sync.transcribe, "_transcribe_assemblyai", return_value="Текст"
+        ) as mocked:
+            self.assertEqual(
+                self.sync.resolve_transcript(self.client, 1, call, args),
+                {"text": "Текст", "status": "assemblyai"},
+            )
+            self.sync.resolve_transcript(self.client, 1, call, args)
+            mocked.assert_called_once()
 
     def test_direct_transcript_falls_back_to_file_upload(self):
         call = {"activity_id": "92", "file_ids": [501]}

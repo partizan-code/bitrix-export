@@ -7,7 +7,7 @@
   - DIRECTION      -> направление (1 входящий, 2 исходящий)
   - FILES          -> id записей разговоров на Диске
 Транскрипцию сначала пробуем взять штатную (crm.activity.call.getTranscript —
-AI-расшифровка Bitrix), если нет — помечаем звонок для Faster Whisper.
+AI-расшифровка Bitrix), если нет — используем AssemblyAI согласно настройкам.
 """
 
 import logging

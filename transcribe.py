@@ -1,13 +1,11 @@
 """
 Записи звонков -> текст.
 
-Провайдеры транскрибации (config.TRANSCRIPTION_PROVIDER):
-  - "assemblyai" — AssemblyAI, с диаризацией (разделение спикеров).
-                   Ключ: переменная окружения ASSEMBLYAI_API_KEY или config.
-  - "whisper"    — локальный Faster Whisper (опциональная зависимость).
+Транскрибация через AssemblyAI с диаризацией (разделение спикеров).
+Ключ: переменная окружения ASSEMBLYAI_API_KEY или config.
 
 Скачивание записей с Диска Bitrix24 — функция download_call_recording,
-работает независимо от провайдера транскрибации.
+работает независимо от транскрибации.
 """
 
 import logging
@@ -159,60 +157,10 @@ def _transcribe_assemblyai(path):
     return _transcribe_assemblyai_url(_aa_upload(path, _aa_headers()))
 
 
-# ================================================================== Faster Whisper
-_model = None
-_whisper_available = None
-
-
-def _get_whisper_model():
-    global _model, _whisper_available
-    if _whisper_available is False:
-        return None
-    if _model is not None:
-        return _model
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        log.warning("faster-whisper не установлен — провайдер whisper недоступен")
-        _whisper_available = False
-        return None
-    device = config.WHISPER_DEVICE
-    if device == "auto":
-        try:
-            import torch  # noqa
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            device = "cpu"
-    compute = "float16" if device == "cuda" else "int8"
-    log.info("Загружаю Whisper '%s' (%s, %s)...", config.WHISPER_MODEL, device, compute)
-    _model = WhisperModel(config.WHISPER_MODEL, device=device, compute_type=compute)
-    _whisper_available = True
-    return _model
-
-
-def _transcribe_whisper(path):
-    model = _get_whisper_model()
-    if model is None:
-        return None
-    segments, _ = model.transcribe(
-        path, language=config.WHISPER_LANGUAGE, vad_filter=True,
-    )
-    lines = []
-    for seg in segments:
-        m, s = divmod(int(seg.start), 60)
-        lines.append(f"[{m:02d}:{s:02d}] {seg.text.strip()}")
-    return "\n".join(lines)
-
-
 # ================================================================== общий вход
 def transcribe_file(path):
-    """Транскрибация одного файла выбранным провайдером. Текст или None."""
-    provider = (config.TRANSCRIPTION_PROVIDER or "").lower()
-    if provider == "assemblyai":
-        return _transcribe_assemblyai(path)
-    if provider == "whisper":
-        return _transcribe_whisper(path)
-    raise ValueError(f"Неизвестный TRANSCRIPTION_PROVIDER: {provider!r}")
+    """Транскрибация одного файла через AssemblyAI. Текст или None."""
+    return _transcribe_assemblyai(path)
 
 
 def transcript_path(deal_id, call):
@@ -239,9 +187,8 @@ def _transcribe_assemblyai_direct(client, call):
 
 
 def use_assemblyai_direct():
-    """Прямая транскрибация по ссылке включена и применима?"""
-    return ((config.TRANSCRIPTION_PROVIDER or "").lower() == "assemblyai"
-            and bool(getattr(config, "ASSEMBLYAI_DIRECT_URL", False)))
+    """Прямая транскрибация по ссылке включена?"""
+    return bool(getattr(config, "ASSEMBLYAI_DIRECT_URL", False))
 
 
 def transcribe_call(client, deal_id, call):

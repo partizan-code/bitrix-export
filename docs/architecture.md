@@ -21,7 +21,7 @@ ZIP (если включён и результат непустой), прогр
 | [fetch_openlines.py](../fetch_openlines.py) | `imopenlines.crm.chat.get`, `imopenlines.session.history.get`, fallback `im.dialog.messages.get` |
 | [fetch_tasks.py](../fetch_tasks.py) | `tasks.task.list`, `UF_CRM_TASK=D_<id>` / `L_<id>` |
 | [users.py](../users.py) | `user.get`, `crm.contact.get`, `crm.status.list`, `crm.category.list`; кэши, `ContactBook`, `LazyUserMap` |
-| [transcribe.py](../transcribe.py) | `disk.file.get`, аудио, AssemblyAI/Whisper, кэш текстов |
+| [transcribe.py](../transcribe.py) | `disk.file.get`, аудио, AssemblyAI, кэш текстов |
 | [normalize.py](../normalize.py) | Схема касания, события стадий |
 | [store.py](../store.py), [registry.py](../registry.py) | Артефакты и переиспользование |
 | [export_llm.py](../export_llm.py) | JSONL, Markdown, manifest, ZIP, имена/время снимка |

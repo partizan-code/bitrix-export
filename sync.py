@@ -8,7 +8,7 @@
     python sync.py --leads 111 222    # конкретные лиды
     python sync.py --lead-limit 5     # тест на 5 лидах
     python sync.py --no-transcribe    # без транскрибации (только структура)
-    python sync.py --skip-whisper     # штатные расшифровки есть, Whisper не запускать
+    python sync.py --skip-transcribe  # без AssemblyAI, штатные расшифровки разрешены
 
 Что делает за проход:
     сделки и лиды -> история стадий/статусов -> звонки (записи, транскрипции)
@@ -121,12 +121,12 @@ def resolve_transcript(client, deal_id, call, args):
     if not has_recording:
         return {"text": None, "status": "no_recording"}
 
-    # 2) внешняя транскрибация (AssemblyAI / Whisper — по config.TRANSCRIPTION_PROVIDER)
-    if config.TRANSCRIBE_ENABLED and not args.skip_whisper:
+    # 2) внешняя транскрибация через AssemblyAI
+    if config.TRANSCRIBE_ENABLED and not args.skip_transcribe:
         txt_path = transcribe.transcribe_call(client, deal_id, call)
         if txt_path:
             with open(txt_path, "r", encoding="utf-8") as f:
-                return {"text": f.read(), "status": config.TRANSCRIPTION_PROVIDER}
+                return {"text": f.read(), "status": "assemblyai"}
         return {"text": None, "status": "no_transcript"}
 
     return {"text": None, "status": "pending"}
@@ -462,8 +462,8 @@ def main():
     ap.add_argument("--leads", type=int, nargs="*", default=None, help="ID лидов")
     ap.add_argument("--no-transcribe", action="store_true",
                     help="не брать транскрипции вообще (быстрая проверка структуры)")
-    ap.add_argument("--skip-whisper", action="store_true",
-                    help="не запускать внешнюю транскрибацию (AssemblyAI/Whisper)")
+    ap.add_argument("--skip-transcribe", action="store_true",
+                    help="не запускать внешнюю транскрибацию (AssemblyAI)")
     args = ap.parse_args()
 
     if args.deals:

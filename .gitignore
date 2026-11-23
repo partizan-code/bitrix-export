@@ -26,3 +26,5 @@ transcripts/
 
 # Logs
 *.log
+
+/bitrix-export.service
