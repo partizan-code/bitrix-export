@@ -2,21 +2,19 @@
 Записи звонков -> текст.
 
 Транскрибация через AssemblyAI с диаризацией (разделение спикеров).
-Ключ: переменная окружения ASSEMBLYAI_API_KEY или config.
+Ключ: ASSEMBLYAI_API_KEY из .env, загружаемый через config.py.
 
 Скачивание записей с Диска Bitrix24 — функция download_call_recording,
 работает независимо от транскрибации.
 """
 
-import logging
 import os
 import time
 
 import requests
 
 import config
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 AA_BASE = "https://api.assemblyai.com"
 
@@ -66,13 +64,14 @@ def download_call_recording(client, deal_id, call):
         info = get_disk_file(client, file_ids[0])
         url = resolve_file_url(info)
         if not url:
-            log.warning("Сделка %s: у файла %s нет DOWNLOAD_URL", deal_id, file_ids[0])
+            log.error("Сущность {} звонок {}: у файла {} нет DOWNLOAD_URL",
+                      deal_id, act_id, file_ids[0])
             return None
         ext = os.path.splitext(info.get("NAME") or "")[1] or ".mp3"
         dest = os.path.join(config.AUDIO_DIR, f"deal{deal_id}_call{act_id}{ext}")
         return download_recording(url, dest)
-    except Exception as e:
-        log.warning("Сделка %s звонок %s: запись не скачана: %s", deal_id, act_id, e)
+    except Exception:
+        log.exception("Сущность {} звонок {}: запись не скачана", deal_id, act_id)
         return None
 
 
@@ -81,8 +80,8 @@ def _aa_headers():
     key = config.ASSEMBLYAI_API_KEY
     if not key:
         raise RuntimeError(
-            "Не задан ключ AssemblyAI: переменная окружения ASSEMBLYAI_API_KEY "
-            "или config.ASSEMBLYAI_API_KEY"
+            "Не задан ключ AssemblyAI. Укажите ASSEMBLYAI_API_KEY "
+            "в файле .env рядом с config.py."
         )
     return {"authorization": key}
 
@@ -125,7 +124,7 @@ def _transcribe_assemblyai_url(audio_url):
                       headers=headers, timeout=60)
     r.raise_for_status()
     transcript_id = r.json()["id"]
-    log.info("    AssemblyAI: transcript %s создан, жду результат...", transcript_id)
+    log.debug("AssemblyAI: transcript_id={}, ожидание результата", transcript_id)
 
     poll_url = f"{AA_BASE}/v2/transcript/{transcript_id}"
     deadline = time.time() + config.ASSEMBLYAI_TIMEOUT
@@ -133,6 +132,7 @@ def _transcribe_assemblyai_url(audio_url):
         res = requests.get(poll_url, headers=headers, timeout=60).json()
         status = res.get("status")
         if status == "completed":
+            log.debug("AssemblyAI: transcript_id={}, распознавание завершено", transcript_id)
             break
         if status == "error":
             raise RuntimeError(f"AssemblyAI: {res.get('error')}")
@@ -204,16 +204,18 @@ def transcribe_call(client, deal_id, call):
         return txt_path
 
     if use_assemblyai_direct() and call.get("file_ids"):
+        log.debug("Сущность {} звонок {}: транскрибация по прямой ссылке", deal_id, act_id)
         try:
             text = _transcribe_assemblyai_direct(client, call)
         except Exception as e:
-            log.warning("Сделка %s звонок %s: прямая ссылка не сработала (%s) "
+            log.warning("Сущность {} звонок {}: прямая ссылка не сработала ({}) "
                         "— скачиваю и загружаю файлом", deal_id, act_id, e)
         else:
             if not text:
                 return None
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(text)
+            log.debug("Сущность {} звонок {}: транскрипция сохранена", deal_id, act_id)
             return txt_path
 
     audio_path = call.get("local_audio")
@@ -224,19 +226,21 @@ def transcribe_call(client, deal_id, call):
             audio_path = os.path.join(config.AUDIO_DIR, f"deal{deal_id}_call{act_id}.mp3")
             try:
                 download_recording(call["recording_url"], audio_path)
-            except Exception as e:
-                log.warning("Сделка %s звонок %s: запись не скачана: %s", deal_id, act_id, e)
+            except Exception:
+                log.exception("Сущность {} звонок {}: запись не скачана", deal_id, act_id)
                 return None
     if not audio_path:
         return None
 
     try:
+        log.debug("Сущность {} звонок {}: транскрибация локального аудио", deal_id, act_id)
         text = transcribe_file(audio_path)
-    except Exception as e:
-        log.warning("Сделка %s звонок %s: транскрибация не удалась: %s", deal_id, act_id, e)
+    except Exception:
+        log.exception("Сущность {} звонок {}: транскрибация не удалась", deal_id, act_id)
         return None
     if not text:
         return None
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(text)
+    log.debug("Сущность {} звонок {}: транскрипция сохранена", deal_id, act_id)
     return txt_path

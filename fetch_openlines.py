@@ -13,12 +13,10 @@
 Так мы всегда знаем, КТО реально писал, даже если ответственный за сделку — другой человек.
 """
 
-import logging
 import re
 
 from api_client import BitrixError
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 BB_RE = re.compile(r"\[/?[a-zA-Z][^\]]*\]")  # [b]..[/b], [br], [url=..] и т.п.
 
@@ -55,7 +53,7 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
             "ACTIVE_ONLY": "N",
         }) or []
     except BitrixError as e:
-        log.warning("%s %s: imopenlines.crm.chat.get: %s",
+        log.warning("{} {}: imopenlines.crm.chat.get: {}",
                     entity_type, deal_id, e)
         return []
     chats = []
@@ -74,7 +72,7 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
             "connector_title": r.get("CONNECTOR_TITLE") or conn,
         })
     if skipped:
-        log.info("%s %s: привязок чатов без CHAT_ID: %d (пропущено)",
+        log.info("{} {}: привязок чатов без CHAT_ID: {} (пропущено)",
                  entity_type, deal_id, skipped)
     return chats
 
@@ -89,7 +87,7 @@ def get_chat_history(client, chat_id):
     try:
         res = client.result("imopenlines.session.history.get", {"CHAT_ID": int(chat_id)})
     except BitrixError as e:
-        log.warning("Чат %s: session.history.get: %s; fallback на im.dialog.messages.get",
+        log.warning("Чат {}: session.history.get: {}; fallback на im.dialog.messages.get",
                     chat_id, e)
         return _history_via_im(client, chat_id)
 
@@ -149,7 +147,7 @@ def _history_via_im(client, chat_id, max_pages=20):
             if len(batch) < 50:
                 break
     except BitrixError as e:
-        log.warning("Чат %s: im.dialog.messages.get: %s", chat_id, e)
+        log.warning("Чат {}: im.dialog.messages.get: {}", chat_id, e)
     messages.sort(key=lambda x: (x["time"] or "", str(x["id"])))
     return messages, users_info
 

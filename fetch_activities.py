@@ -10,14 +10,12 @@
 AI-расшифровка Bitrix), если нет — используем AssemblyAI согласно настройкам.
 """
 
-import logging
 import re
 from datetime import datetime
 
 import config
 from api_client import BitrixError
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 ACTIVITY_DIRECTION = {1: "in", 2: "out"}  # направление дела: 1 входящее, 2 исходящее
 
@@ -97,7 +95,7 @@ def get_deal_calls(client, deal_id, date_from=None, owner_type=2):
                 full = client.result("crm.activity.get", {"id": int(act["ID"])}) or {}
                 act["FILES"] = full.get("FILES") or []
             except BitrixError as e:
-                log.debug("activity.get(%s): %s", act["ID"], e)
+                log.debug("activity.get({}): {}", act["ID"], e)
                 act["FILES"] = []
     return acts
 
@@ -113,7 +111,7 @@ def get_builtin_transcript(client, activity_id):
         res = client.result("crm.activity.call.getTranscript",
                             {"activityId": int(activity_id)})
     except BitrixError as e:
-        log.debug("getTranscript(%s): %s", activity_id, e)
+        log.debug("getTranscript({}): {}", activity_id, e)
         return None
     if isinstance(res, str):
         return res or None

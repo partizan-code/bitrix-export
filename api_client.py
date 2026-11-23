@@ -8,12 +8,11 @@ REST-клиент Bitrix24 для входящего вебхука.
 """
 
 import time
-import logging
+
 import requests
 
 import config
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 
 class BitrixError(Exception):
@@ -29,9 +28,8 @@ class B24Client:
         raw = webhook_url or config.WEBHOOK_URL
         if not raw or "ВАШ_ПОРТАЛ" in raw or "USER_ID" in raw:
             raise SystemExit(
-                "Не настроен WEBHOOK_URL. Задайте переменную окружения "
-                "B24_WEBHOOK (или строку B24_WEBHOOK=... в файле .env "
-                "рядом с config.py)."
+                "Не настроен WEBHOOK_URL. Укажите B24_WEBHOOK "
+                "в файле .env рядом с config.py."
             )
         url = raw.rstrip("/") + "/"
         self.base = url
@@ -50,20 +48,25 @@ class B24Client:
             except requests.RequestException as e:
                 last_err = e
                 wait = 2 ** attempt
-                log.warning("Сеть: %s (%s), повтор через %ss", method, e, wait)
+                log.warning("{}: сеть ({}: {}), попытка {}/{}, повтор через {} с",
+                            method, type(e).__name__, e, attempt + 1, config.MAX_RETRIES, wait)
                 time.sleep(wait)
                 continue
 
             if resp.status_code == 429:
                 wait = 2 ** attempt
-                log.warning("429 rate limit (%s), пауза %ss", method, wait)
+                log.warning("{}: HTTP 429, попытка {}/{}, пауза {} с",
+                            method, attempt + 1, config.MAX_RETRIES, wait)
                 time.sleep(wait)
                 continue
 
             try:
                 data = resp.json()
             except ValueError:
-                last_err = BitrixError(method, f"HTTP {resp.status_code}", resp.text[:300])
+                last_err = BitrixError(method, f"HTTP {resp.status_code}", "Ответ не JSON")
+                log.warning("{}: HTTP {}, ответ не JSON, попытка {}/{}, пауза {} с",
+                            method, resp.status_code, attempt + 1, config.MAX_RETRIES,
+                            2 ** attempt)
                 time.sleep(2 ** attempt)
                 continue
 
@@ -72,7 +75,8 @@ class B24Client:
                 desc = data.get("error_description", "")
                 if err in ("QUERY_LIMIT_EXCEEDED", "OPERATION_TIME_LIMIT"):
                     wait = 2 ** attempt
-                    log.warning("%s (%s), пауза %ss", err, method, wait)
+                    log.warning("{}: {}, попытка {}/{}, пауза {} с",
+                                method, err, attempt + 1, config.MAX_RETRIES, wait)
                     time.sleep(wait)
                     last_err = BitrixError(method, err, desc)
                     continue

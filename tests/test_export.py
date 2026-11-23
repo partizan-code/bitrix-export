@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 import requests
+from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -27,6 +28,7 @@ STAMP = "2026-11-23T12:00:00+0300"
 ISO = "2026-11-23T12:00:00+03:00"
 PROJECT_MODULES = (
     "config",
+    "logging_setup",
     "api_client",
     "export_llm",
     "fetch_activities",
@@ -155,10 +157,19 @@ def make_config(root):
         "REEXPORT_CLOSED_ON_CHANGE": False,
         "MAKE_SNAPSHOT_ZIP": True,
         "FILE_BRAND": "TEST",
-        "COUNTRY_FIELD": "UF_COUNTRY",
-        "FILE_COUNTRY": "RB",
+        "DEAL_COUNTRY_BY_CATEGORY": {
+            0: "RB",
+            34: "RB",
+            36: "RB",
+            6: "RB",
+            28: "RF",
+            32: "RF",
+            38: "RF",
+        },
         "ZIP_NAME_TEMPLATE": "Снимок {stamp}",
         "BASE_DIR": str(root),
+        "DEBUG_LOG_PATH": str(root / "debug.log"),
+        "ERROR_LOG_PATH": str(root / "error.log"),
     }
     for name, directory in (
         ("DATA_DIR", "data"),
@@ -413,10 +424,11 @@ class ExportTests(unittest.TestCase):
             sys.modules.pop(name, None)
         sys.modules["config"] = self.cfg
         self.stack.enter_context(patch.dict(os.environ, {}, clear=True))
-        self.stack.enter_context(patch("logging.basicConfig"))
-        self.stack.enter_context(
-            patch.object(logging.getLogger("b24"), "disabled", True)
-        )
+        logger.remove()
+        self.addCleanup(logger.remove)
+        root_logger = logging.getLogger()
+        self.stack.callback(setattr, root_logger, "handlers", root_logger.handlers[:])
+        self.stack.callback(root_logger.setLevel, root_logger.level)
         self.sync = importlib.import_module("sync")
         self.client = FakeClient()
         self.client.bitrix_error = self.sync.BitrixError
@@ -493,6 +505,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(manifest["export_type"], "FULL_SNAPSHOT")
         self.assertEqual(manifest["snapshot_at"], ISO)
         self.assertTrue(manifest["is_complete"])
+        self.assertEqual(manifest["countries"], ["RB", "UNKNOWN"])
         for entity in ("deals", "leads"):
             self.assertEqual(manifest[entity]["total"], 3)
             self.assertEqual(
@@ -523,6 +536,9 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(call["content"]["transcript_status"], "builtin")
             self.assertEqual(len([t for t in tps if t["event_type"] == "message"]), 1)
             md = self.sync.store.load_md(1, entity=entity)
+            country = "RB" if entity == "deal" else "UNKNOWN"
+            self.assertIn(f"- Страна: {country}\n", md.split("## Лента касаний")[0])
+            self.assertIn("- Страна: РБ\n", md.split("## Поля ")[1])
             self.assertIn("Участников И.", md)
             self.assertIn("Ответственный И.", md)
             self.assertIn("Второй, Третий", md)
@@ -539,10 +555,10 @@ class ExportTests(unittest.TestCase):
             )
             self.assertIn("manifest.json", archive.namelist())
             self.assertFalse(any(n.endswith(".jsonl") for n in archive.namelist()))
-        # Эталон исходной версии: все файлы и трасса API, до очистки кода.
+        # Эталон обновлён: источник «Сайт» даёт UNKNOWN у лидов, поля CRM прежние.
         self.assertEqual(
             self.digest(),
-            "c8dbb97c3ee13433b551ea11a09fb98ab1f4dc3f6d06a0e1778733d3291f3ac9",
+            "21aca37a6dcb946883d19c50fd64e5a890935606fe22f56af0c6d91c623e5e03",
         )
 
     def test_incremental_snapshot(self):
@@ -550,6 +566,7 @@ class ExportTests(unittest.TestCase):
         self.client.omit_closed = True
         self.client.trace.clear()
         manifest = self.run_sync()
+        self.assertEqual(manifest["countries"], ["RB", "UNKNOWN"])
         self.assertEqual(manifest["update_mode"], "INCREMENTAL")
         self.assertEqual(manifest["overlap_from"], "2026-11-22T12:00:00+03:00")
         for ent in ("deals", "leads"):
@@ -563,8 +580,244 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(all(p["filter"]["OWNER_ID"] == 1 for p in calls))
         self.assertEqual(
             self.digest(),
-            "40c7238a569d135c6a3296549e0f0c5bfb2375609aa27e8184c8d48815472280",
+            "bf16dcc51a06a3a1b662aede6212cf173a967b46e7eb1a38348fb76dc2edb8b0",
         )
+
+    def test_country_uses_category_or_source_and_preserves_crm_fields(self):
+        export = self.sync.export_llm
+        for category, expected in (
+            (0, "RB"),
+            (34, "RB"),
+            (36, "RB"),
+            (6, "RB"),
+            (28, "RF"),
+            (32, "RF"),
+            (38, "RF"),
+        ):
+            for value in (category, str(category)):
+                record = {
+                    "ID": "1",
+                    "CATEGORY_ID": value,
+                    "_source": "Россия ON",
+                    "_country": "OLD",
+                    "UF_COUNTRY": "1",
+                    "_fields": {"UF_COUNTRY": {"title": "Страна", "value": "РБ"}},
+                }
+                before = copy.deepcopy(record)
+                with self.subTest(category=value):
+                    self.assertEqual(export.entity_country(record), expected)
+                    self.assertEqual(record, before)
+        for value in (None, "", "bad", 22, 30, 999):
+            with self.subTest(unknown_category=value):
+                self.assertEqual(
+                    export.entity_country(
+                        {
+                            "CATEGORY_ID": value,
+                            "_source": "РБ ON",
+                            "_fields": {
+                                "UF_COUNTRY": {"title": "Страна", "value": "РБ"}
+                            },
+                        }
+                    ),
+                    "UNKNOWN",
+                )
+        for source, expected in (
+            ("РБ ON, Сайт", "RB"),
+            (" Россия OFF ", "RF"),
+            ("рф ON", "RF"),
+            ("РБреклама", "UNKNOWN"),
+            ("Сайт Россия", "UNKNOWN"),
+            (None, "UNKNOWN"),
+        ):
+            record = {"_source": source, "CATEGORY_ID": "28", "_country": "OLD"}
+            before = copy.deepcopy(record)
+            with self.subTest(source=source):
+                self.assertEqual(export.entity_country(record, "lead"), expected)
+                self.assertEqual(record, before)
+        with self.assertRaises(ValueError):
+            export.entity_country({}, "contact")
+
+    def test_country_full_export_does_not_fill_empty_crm_country(self):
+        for entity in ("deal", "lead"):
+            self.client.rows[entity][0]["CATEGORY_ID"] = "28"
+            self.client.rows[entity][0]["SOURCE_ID"] = "Россия ON, Сайт"
+            self.client.rows[entity][1]["CATEGORY_ID"] = "6"
+            self.client.rows[entity][1]["SOURCE_ID"] = "РБ ON, Сайт"
+            self.client.rows[entity][1]["UF_COUNTRY"] = ""
+        manifest = self.run_sync()
+        self.assertEqual(manifest["countries"], ["RB", "RF", "UNKNOWN"])
+        for entity in ("deal", "lead"):
+            for did, expected in ((1, "RF"), (2, "RB")):
+                record = self.sync.store.load_deal(did, entity=entity)
+                self.assertEqual(record["_country"], expected)
+                self.assertEqual(
+                    self.sync.store.load_stats(did, entity=entity)["country"], expected
+                )
+                md = self.sync.store.load_md(did, entity=entity)
+                self.assertIn(
+                    f"- Страна: {expected}\n", md.split("## Лента касаний")[0]
+                )
+                fields_text = md.split("## Поля ")[1]
+                if did == 1:
+                    self.assertEqual(record["UF_COUNTRY"], "1")
+                    self.assertEqual(record["_fields"]["UF_COUNTRY"]["value"], "РБ")
+                    self.assertIn("- Страна: РБ\n", fields_text)
+                else:
+                    self.assertEqual(record["UF_COUNTRY"], "")
+                    self.assertNotIn("UF_COUNTRY", record["_fields"])
+                    self.assertNotIn("- Страна:", fields_text)
+                filename = self.sync.export_llm.card_filename(
+                    record, self.sync.export_llm.ExportContext(), entity=entity
+                )
+                self.assertIn(f"_{expected}_", filename)
+                self.assertTrue(list((self.root / "export/snapshot").rglob(filename)))
+
+    def test_reused_country_is_recalculated_without_changing_store(self):
+        for entity in ("deal", "lead"):
+            self.client.rows[entity][1]["CATEGORY_ID"] = "28"
+            self.client.rows[entity][1]["SOURCE_ID"] = "Россия ON, Сайт"
+        self.run_sync()
+        originals = {}
+        for entity in ("deal", "lead"):
+            record = self.sync.store.load_deal(2, entity=entity)
+            record["_country"] = "RB"
+            md = self.sync.store.load_md(2, entity=entity).replace(
+                "- Страна: RF\n", "- Страна: RB\n", 1
+            )
+            stats = self.sync.store.load_stats(2, entity=entity)
+            stats["country"] = "RB"
+            self.sync.store.save_artifacts(
+                record,
+                md,
+                self.sync.store.load_tps(2, entity=entity),
+                stats,
+                entity=entity,
+            )
+            originals[entity] = md
+        store_before = {
+            p: p.read_bytes() for p in (self.root / "data/store").rglob("2.*")
+        }
+        for omit in (False, True):
+            self.client.omit_closed = omit
+            self.client.trace.clear()
+            manifest = self.run_sync()
+            self.assertTrue(manifest["is_complete"])
+            for entity in ("deal", "lead"):
+                ent_dir = self.sync.export_llm.ENTITY_DIR[entity]
+                cards = list(
+                    (self.root / "export/snapshot" / ent_dir).rglob("*_2_SNAP_*.md")
+                )
+                self.assertEqual(len(cards), 1)
+                self.assertIn("_RF_", cards[0].name)
+                self.assertEqual(
+                    cards[0].read_text(encoding="utf-8"),
+                    originals[entity].replace("- Страна: RB\n", "- Страна: RF\n", 1),
+                )
+                index = self.root / f"export/index_{entity}_completed.jsonl"
+                self.assertEqual(
+                    json.loads(index.read_text(encoding="utf-8"))["country"], "RF"
+                )
+            for path, content in store_before.items():
+                self.assertEqual(path.read_bytes(), content)
+            calls = [
+                p for _, method, p in self.client.trace if method == "crm.activity.list"
+            ]
+            self.assertTrue(all(p["filter"]["OWNER_ID"] == 1 for p in calls))
+
+    def test_country_header_patch_preserves_body_and_line_endings(self):
+        export = self.sync.export_llm
+        for newline in ("\n", "\r\n"):
+            for has_country in (False, True):
+                for anchor in ("Текущая стадия", "Текущий статус", "Источник"):
+                    header = f"# Карточка\n\n- {anchor}: Пример\n"
+                    old = header + ("- Страна: RB\n" if has_country else "")
+                    body = "- Создана: дата\n\n## Лента касаний\n- Страна: Текст сообщения\n\n## Поля сделки\n- Страна: РБ\n"
+                    original = (old + body).replace("\n", newline)
+                    expected = (header + "- Страна: RF\n" + body).replace("\n", newline)
+                    self.assertEqual(
+                        export.update_card_country(original, "RF"), expected
+                    )
+
+    def test_refresh_names_recalculates_country(self):
+        for entity in ("deal", "lead"):
+            self.client.rows[entity][0]["CATEGORY_ID"] = "28"
+            self.client.rows[entity][0]["SOURCE_ID"] = "Россия ON, Сайт"
+        self.run_sync()
+        for entity in ("deal", "lead"):
+            record = self.sync.store.load_deal(1, entity=entity)
+            record["_country"] = "RB"
+            stats = self.sync.store.load_stats(1, entity=entity)
+            stats["country"] = "RB"
+            self.sync.store.save_artifacts(
+                record,
+                self.sync.store.load_md(1, entity=entity),
+                self.sync.store.load_tps(1, entity=entity),
+                stats,
+                entity=entity,
+            )
+        refresh = importlib.import_module("refresh_names")
+        self.client.trace.clear()
+        with patch.object(sys, "argv", ["refresh_names.py", "--offline"]):
+            refresh.main()
+        self.assertFalse(self.client.trace)
+        for entity in ("deal", "lead"):
+            record = self.sync.store.load_deal(1, entity=entity)
+            self.assertEqual(record["_country"], "RF")
+            self.assertEqual(record["_fields"]["UF_COUNTRY"]["value"], "РБ")
+            self.assertEqual(
+                self.sync.store.load_stats(1, entity=entity)["country"], "RF"
+            )
+            md = self.sync.store.load_md(1, entity=entity)
+            self.assertIn("- Страна: RF\n", md.split("## Лента касаний")[0])
+            self.assertIn("- Страна: РБ\n", md.split("## Поля ")[1])
+
+    def test_reused_lead_keeps_cached_source_if_dictionary_is_unavailable(self):
+        self.run_sync()
+        record = self.sync.store.load_deal(2, entity="lead")
+        record["_source"] = "Россия ON, Сайт"
+        self.sync.store.save_artifacts(
+            record,
+            self.sync.store.load_md(2, entity="lead"),
+            self.sync.store.load_tps(2, entity="lead"),
+            self.sync.store.load_stats(2, entity="lead"),
+            entity="lead",
+        )
+        answer = self.client.answer
+
+        def without_sources(kind, method, params):
+            if (
+                method == "crm.status.list"
+                and params.get("filter", {}).get("ENTITY_ID") == "SOURCE"
+            ):
+                return []
+            return answer(kind, method, params)
+
+        with patch.object(self.client, "answer", side_effect=without_sources):
+            manifest = self.run_sync()
+        self.assertTrue(manifest["is_complete"])
+        path = next(
+            (self.root / "export/snapshot/Лиды/Завершенные").glob("*_2_SNAP_*.md")
+        )
+        self.assertIn("_RF_", path.name)
+        self.assertIn(
+            "- Страна: RF\n",
+            path.read_text(encoding="utf-8").split("## Лента касаний")[0],
+        )
+
+    def test_country_copy_survives_failed_atomic_replace(self):
+        export = self.sync.export_llm
+        record = {"ID": "1", "CATEGORY_ID": "28", "_country": "RF"}
+        md = "# Карточка\n\n- Страна: RB\n\n## Поля сделки\n- Страна: РБ\n"
+        ctx = export.ExportContext()
+        path = Path(export.write_deal_markdown_copy(md, record, "completed", ctx, {}))
+        before = path.read_bytes()
+        with (
+            patch("os.replace", side_effect=OSError("Замена недоступна")),
+            self.assertRaises(OSError),
+        ):
+            export.write_deal_markdown_copy(md, record, "completed", ctx, {})
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(Path(str(path) + ".tmp").exists())
 
     def test_reuse_requires_matching_schema_and_all_artifacts(self):
         self.run_sync()
@@ -949,6 +1202,132 @@ class ExportTests(unittest.TestCase):
             self.assertRaisesRegex(api.BitrixError, "RETRIES_EXCEEDED"),
         ):
             client.call("list")
+
+    def test_logging_levels_append_and_reconfiguration(self):
+        setup = importlib.import_module("logging_setup")
+        setup.configure_logging()
+        setup.log.opt().debug("Отладка: ID {}", 42)
+        setup.log.info("Запуск снимка")
+        setup.log.warning("Повтор запроса")
+        setup.log.error("Ошибка сущности")
+        setup.configure_logging()
+        setup.log.info("Повторная настройка")
+        logging.getLogger("synthetic_library").info("Шум библиотеки")
+        logging.getLogger("synthetic_library").warning("Предупреждение библиотеки")
+        logging.getLogger("synthetic_library").error("Ошибка библиотеки")
+        setup.log.remove()
+
+        debug = (self.root / "debug.log").read_text(encoding="utf-8")
+        error = (self.root / "error.log").read_text(encoding="utf-8")
+        for message in (
+            "Отладка: ID 42",
+            "Запуск снимка",
+            "Повтор запроса",
+            "Ошибка сущности",
+            "Повторная настройка",
+            "Предупреждение библиотеки",
+            "Ошибка библиотеки",
+        ):
+            self.assertEqual(debug.count(message), 1)
+        self.assertNotIn("Шум библиотеки", debug)
+        self.assertIn("pid=", debug)
+        self.assertIn("test_export:test_logging_levels", debug)
+        self.assertEqual(error.count("Ошибка сущности"), 1)
+        self.assertEqual(error.count("Ошибка библиотеки"), 1)
+        self.assertNotIn("Предупреждение", error)
+        self.assertNotIn("Отладка", error)
+        self.assertNotIn("Запуск", error)
+        self.assertEqual(
+            sorted(p.name for p in self.root.glob("*.log")), ["debug.log", "error.log"]
+        )
+
+    def test_logging_redacts_messages_and_chained_tracebacks(self):
+        setup = importlib.import_module("logging_setup")
+        key = "assembly-key-for-test"
+        bot_token = "123456:telegram-test-secret"
+        self.cfg.ASSEMBLYAI_API_KEY = key
+        with patch.dict(os.environ, {"TG_BOT_TOKEN": bot_token}):
+            setup.configure_logging()
+        url = (
+            "https://example.invalid/rest/1/webhook-secret/download/?token=disk-secret"
+        )
+        setup.log.opt().warning("Ссылка {}; ключ {}; Telegram {}", url, key, bot_token)
+        setup.log.warning("Authorization: Bearer unknown-bearer-secret")
+        setup.log.warning("Authorization: Basic unknown-basic-secret")
+
+        def fail():
+            private_value = "LOCAL-VALUE-MUST-NOT-BE-LOGGED"
+            try:
+                raise ValueError(f"token=disk-secret {key} {bot_token}")
+            except ValueError as cause:
+                self.assertTrue(private_value)
+                raise RuntimeError(f"Скачивание {url}") from cause
+
+        try:
+            fail()
+        except RuntimeError:
+            setup.log.opt(exception=True).error("Сущность {} звонок {}: сбой", 7, 11)
+        try:
+            raise RuntimeError("/rest/1/another-secret/download/?token=path-secret")
+        except RuntimeError:
+            logging.getLogger("synthetic_library").exception("Сбой библиотеки")
+        setup.log.remove()
+
+        for filename in ("debug.log", "error.log"):
+            content = (self.root / filename).read_text(encoding="utf-8")
+            for secret in (
+                url,
+                key,
+                bot_token,
+                "disk-secret",
+                "webhook-secret",
+                "another-secret",
+                "path-secret",
+                "LOCAL-VALUE-MUST-NOT-BE-LOGGED",
+            ):
+                self.assertNotIn(secret, content)
+            self.assertIn("[REDACTED]", content)
+            self.assertIn("RuntimeError", content)
+            self.assertIn("ValueError", content)
+            self.assertIn("Traceback", content)
+            self.assertIn("Сущность 7 звонок 11", content)
+            self.assertNotIn("unknown-bearer-secret", content)
+            self.assertNotIn("unknown-basic-secret", content)
+
+    def test_cli_logs_failure_and_preserves_exit_codes(self):
+        setup = importlib.import_module("logging_setup")
+
+        def fail():
+            raise RuntimeError("Синтетический сбой CLI")
+
+        with self.assertRaises(SystemExit) as failure:
+            setup.run_cli(fail)
+        self.assertEqual(failure.exception.code, 1)
+        with self.assertRaises(SystemExit) as success:
+            setup.run_cli(lambda: 0)
+        self.assertEqual(success.exception.code, 0)
+        with self.assertRaises(SystemExit) as config_error:
+            setup.run_cli(lambda: sys.exit("Нет настройки доступа"))
+        self.assertEqual(config_error.exception.code, 1)
+        setup.log.remove()
+        content = (self.root / "error.log").read_text(encoding="utf-8")
+        self.assertEqual(content.count("Аварийное завершение"), 1)
+        self.assertIn("Синтетический сбой CLI", content)
+        self.assertIn("Нет настройки доступа", content)
+
+    def test_transcription_failure_is_logged_with_call_id(self):
+        setup = importlib.import_module("logging_setup")
+        setup.configure_logging()
+        transcribe = importlib.import_module("transcribe")
+        call = {"activity_id": 123, "local_audio": "synthetic.mp3"}
+        with patch.object(
+            transcribe, "transcribe_file", side_effect=RuntimeError("AA failed")
+        ):
+            self.assertIsNone(transcribe.transcribe_call(self.client, 7, call))
+        setup.log.remove()
+        error = (self.root / "error.log").read_text(encoding="utf-8")
+        self.assertIn("Сущность 7 звонок 123", error)
+        self.assertIn("AA failed", error)
 
 
 if __name__ == "__main__":

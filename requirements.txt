@@ -1,3 +1,4 @@
 requests>=2.31
-# опционально — чтение ключа AssemblyAI из .env:
+loguru>=0.7.3,<0.8
+# Загрузка секретов из .env через config.py:
 python-dotenv>=1.0

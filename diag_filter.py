@@ -7,6 +7,7 @@
 
 import config
 from api_client import B24Client
+from logging_setup import run_cli
 
 
 def main():
@@ -34,4 +35,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

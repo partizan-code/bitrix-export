@@ -11,22 +11,22 @@
 import asyncio
 import glob
 import json
-import logging
 import os
 import subprocess
 import sys
-import time
-
-import config  # загружает .env и даёт пути DATA_DIR/EXPORT_DIR
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("bot")
+import config  # загружает .env и даёт пути DATA_DIR/EXPORT_DIR
+from logging_setup import log, run_cli
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 ALLOWED = {int(x) for x in os.environ.get("TG_CHAT_ID", "")
@@ -35,7 +35,6 @@ ALLOWED = {int(x) for x in os.environ.get("TG_CHAT_ID", "")
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOCK = os.path.join(config.DATA_DIR, "sync.lock")
 PROGRESS = os.path.join(config.DATA_DIR, "progress.json")
-RUN_LOG = os.path.join(config.DATA_DIR, "sync_run.log")
 
 KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="▶️ Запустить выгрузку", callback_data="run")]])
@@ -112,8 +111,13 @@ async def monitor(msg: Message, proc: subprocess.Popen):
                 await msg.edit_text(text)
                 last_text = text
             except Exception as e:
-                log.debug("edit progress: %s", e)
+                log.debug("edit progress: {}", e)
         await asyncio.sleep(POLL_SEC)
+
+    if proc.returncode:
+        log.error("sync.py завершился с кодом {} (PID {})", proc.returncode, proc.pid)
+    else:
+        log.info("sync.py завершён (PID {})", proc.pid)
 
     try:
         os.remove(LOCK)
@@ -124,7 +128,7 @@ async def monitor(msg: Message, proc: subprocess.Popen):
     try:
         await msg.edit_text(fmt_done(p, proc.returncode), reply_markup=KB)
     except Exception as e:
-        log.debug("edit done: %s", e)
+        log.debug("edit done: {}", e)
 
     zpath = latest_zip()
     if not zpath:
@@ -142,14 +146,13 @@ async def monitor(msg: Message, proc: subprocess.Popen):
 
 
 # ------------------------------------------------------------------ handlers
-bot = Bot(TOKEN)
 dp = Dispatcher()
 
 
 @dp.message(CommandStart())
 async def cmd_start(m: Message):
     if not allowed(m.chat.id):
-        log.warning("Чужой чат %s", m.chat.id)
+        log.warning("Чужой чат {}", m.chat.id)
         return
     pid = running_pid()
     text = (f"⚙️ Выгрузка сейчас идёт (PID {pid})." if pid
@@ -161,7 +164,7 @@ async def cmd_start(m: Message):
 async def on_run(q: CallbackQuery):
     await q.answer()
     if not allowed(q.message.chat.id):
-        log.warning("Чужой чат %s", q.message.chat.id)
+        log.warning("Чужой чат {}", q.message.chat.id)
         return
 
     pid = running_pid()
@@ -177,17 +180,12 @@ async def on_run(q: CallbackQuery):
     except OSError:
         pass
 
-    logf = open(RUN_LOG, "a", encoding="utf-8")
-    logf.write(f"\n===== запуск из Telegram-бота "
-               f"{time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
-    logf.flush()
     proc = subprocess.Popen(
         [sys.executable, "sync.py"], cwd=BASE,
-        stdout=logf, stderr=subprocess.STDOUT,
         env=os.environ.copy())
     with open(LOCK, "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
-    log.info("sync.py запущен из бота, PID %d", proc.pid)
+    log.info("sync.py запущен из бота, PID {}", proc.pid)
 
     msg = await q.message.edit_text("🚀 Выгрузка запущена…")
     asyncio.create_task(monitor(msg, proc))
@@ -196,13 +194,16 @@ async def on_run(q: CallbackQuery):
 # ------------------------------------------------------------------ main
 def main():
     if not TOKEN:
-        raise SystemExit("Не задан TG_BOT_TOKEN (env или .env)")
+        raise SystemExit("Не задан TG_BOT_TOKEN. Укажите его в файле .env "
+                         "рядом с config.py.")
     if not ALLOWED:
-        raise SystemExit("Не задан TG_CHAT_ID (env или .env) — "
+        raise SystemExit("Не задан TG_CHAT_ID. Укажите его в файле .env "
+                         "рядом с config.py — "
                          "без него кнопкой мог бы воспользоваться любой")
-    log.info("Бот запущен (разрешённые чаты: %s)", sorted(ALLOWED))
+    bot = Bot(TOKEN)
+    log.info("Бот запущен: разрешённых чатов {}", len(ALLOWED))
     asyncio.run(dp.start_polling(bot))
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

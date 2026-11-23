@@ -13,12 +13,10 @@
 (fetch_activities / fetch_openlines / fetch_tasks) с owner_type=1.
 """
 
-import logging
 
 import config
 from fetch_deals import load_fields_meta
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 LEAD_SELECT = ["*", "UF_*"]
 
@@ -48,7 +46,7 @@ def get_leads(client):
         lead = client.result("crm.lead.get", {"id": flt["@ID"][0]})
         return [lead] if lead else []
 
-    log.info("Фильтр crm.lead.list: %s", flt or "(без фильтра)")
+    log.info("Фильтр crm.lead.list: {}", flt or "(без фильтра)")
     leads = client.call_list("crm.lead.list", {
         "order": {"ID": "ASC"},
         "filter": flt,
@@ -65,7 +63,7 @@ def get_leads_by_ids(client, ids):
     if not ids:
         return []
     flt = {"@ID": ids}
-    log.info("Фильтр crm.lead.list: %s", flt)
+    log.info("Фильтр crm.lead.list: {}", flt)
     return client.call_list("crm.lead.list", {
         "order": {"ID": "ASC"},
         "filter": flt,
@@ -91,7 +89,7 @@ def get_leads_incremental(client, changed_since):
     def _pull(extra):
         flt = dict(base)
         flt.update(extra)
-        log.info("Фильтр crm.lead.list: %s", flt)
+        log.info("Фильтр crm.lead.list: {}", flt)
         rows = client.call_list("crm.lead.list", {
             "order": {"ID": "ASC"},
             "filter": flt,

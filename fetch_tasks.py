@@ -5,11 +5,9 @@
 Источник: tasks.task.list (постранично).
 """
 
-import logging
 
 from api_client import BitrixError
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 TASK_SELECT = [
     "ID", "TITLE", "DESCRIPTION", "STATUS", "REAL_STATUS",
@@ -30,7 +28,7 @@ def get_deal_tasks(client, deal_id, prefix="D"):
             "select": TASK_SELECT,
         })
     except BitrixError as e:
-        log.warning("%s_%s: tasks.task.list: %s", prefix, deal_id, e)
+        log.warning("{}_{}: tasks.task.list: {}", prefix, deal_id, e)
         return []
 
 

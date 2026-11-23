@@ -13,6 +13,7 @@ import sys
 
 import config
 from api_client import B24Client
+from logging_setup import run_cli
 
 DEFAULT_TARGETS = [
     "UF_CRM_1760091836", "UF_CRM_1760432770",
@@ -59,4 +60,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

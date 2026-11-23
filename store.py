@@ -16,12 +16,9 @@
 """
 
 import json
-import logging
 import os
 
 import config
-
-log = logging.getLogger("b24")
 
 _KINDS = ("deals", "tps", "index", "deal")
 

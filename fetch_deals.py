@@ -7,13 +7,11 @@
 """
 
 import json
-import logging
 import os
 
 import config
+from logging_setup import log
 from users import user_name
-
-log = logging.getLogger("b24")
 
 DEAL_SELECT = ["*", "UF_*"]  # все стандартные + пользовательские поля
 
@@ -53,7 +51,7 @@ def get_deals(client):
         deal = client.result("crm.deal.get", {"id": flt["@ID"][0]})
         return [deal] if deal else []
 
-    log.info("Фильтр crm.deal.list: %s", flt or "(без фильтра)")
+    log.info("Фильтр crm.deal.list: {}", flt or "(без фильтра)")
     deals = client.call_list("crm.deal.list", {
         "order": {"ID": "ASC"},
         "filter": flt,
@@ -70,7 +68,7 @@ def get_deals_by_ids(client, ids):
     if not ids:
         return []
     flt = {"@ID": ids}
-    log.info("Фильтр crm.deal.list: %s", flt)
+    log.info("Фильтр crm.deal.list: {}", flt)
     return client.call_list("crm.deal.list", {
         "order": {"ID": "ASC"},
         "filter": flt,
@@ -99,7 +97,7 @@ def get_deals_incremental(client, changed_since):
     def _pull(extra):
         flt = dict(base)
         flt.update(extra)
-        log.info("Фильтр crm.deal.list: %s", flt)
+        log.info("Фильтр crm.deal.list: {}", flt)
         rows = client.call_list("crm.deal.list", {
             "order": {"ID": "ASC"},
             "filter": flt,

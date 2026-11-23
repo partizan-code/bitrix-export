@@ -21,12 +21,10 @@
 """
 
 import json
-import logging
 import os
 
 import config
-
-log = logging.getLogger("b24")
+from logging_setup import log
 
 CLOSED_GROUPS = ("completed", "technical")
 
@@ -57,7 +55,7 @@ def load():
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        log.warning("registry.json не прочитан (%s) — считаю реестр пустым", e)
+        log.warning("registry.json не прочитан ({}) — считаю реестр пустым", e)
         return {}
 
 

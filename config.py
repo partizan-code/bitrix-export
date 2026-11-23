@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
 """
 Конфигурация выгрузки Bitrix24.
 
-Единственное обязательное действие: задать URL вебхука переменной
-окружения B24_WEBHOOK (или в файле .env рядом с config.py).
+Для доступа к Bitrix24 задайте URL вебхука в B24_WEBHOOK
+в файле .env рядом с config.py.
 Вебхук создаётся: Настройки -> Разработчикам -> Другое -> Входящий вебхук.
 Необходимые права (scopes): crm, im, imopenlines, telephony, user;
 для выгрузки задач (INCLUDE_TASKS) — ещё task (не входит в базовый перечень).
@@ -10,15 +11,16 @@
 
 import os
 
-# подхватываем .env рядом с config.py, если установлен python-dotenv
+# Загружаем секреты из .env рядом с config.py через python-dotenv.
 try:
     from dotenv import load_dotenv
+
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 except ImportError:
     pass
 
 # ---------------------------------------------------------------- доступ
-WEBHOOK_URL = os.environ.get("B24_WEBHOOK")  # переменная окружения или .env
+WEBHOOK_URL = os.environ.get("B24_WEBHOOK")  # B24_WEBHOOK из загруженного .env
 
 # Базовый URL портала (scheme://host) — выводится из B24_WEBHOOK
 # (формат https://<host>/rest/<user>/<key>/); если переменная не задана —
@@ -32,14 +34,14 @@ else:
     PORTAL_URL = "https://lexs.bitrix24.by"
 
 # ---------------------------------------------------------------- объём выгрузки
-DEAL_IDS = []          # [] = все сделки; иначе список ID, напр. [1234, 5678]
+DEAL_IDS = []  # [] = все сделки; иначе список ID, напр. [1234, 5678]
 DATE_FROM = "2025-10-29T00:00:00+03:00"  # None = без ограничения (сделки и лиды)
-DEALS_LIMIT = 0       # 0 = без лимита; 20 — для тестовой выборки
+DEALS_LIMIT = 0  # 0 = без лимита; 20 — для тестовой выборки
 
 # ---------------------------------------------------------------- лиды
-PROCESS_LEADS = True   # выгружать лиды параллельно со сделками
-LEAD_IDS = []          # [] = все лиды; иначе список ID
-LEADS_LIMIT = 0        # 0 = без лимита
+PROCESS_LEADS = True  # выгружать лиды параллельно со сделками
+LEAD_IDS = []  # [] = все лиды; иначе список ID
+LEADS_LIMIT = 0  # 0 = без лимита
 # Технические лиды (брак/мусор/дубли): завершённые лиды, чей статус
 # содержит любое из ключевых слов (регистронезависимо), либо явно
 # перечислен в LEAD_TECHNICAL_STATUS_IDS. Все остальные закрытые —
@@ -48,20 +50,20 @@ LEAD_TECHNICAL_STATUS_IDS = []
 LEAD_TECHNICAL_STATUS_KEYWORDS = ["дубль", "тест", "битое", "битый", "мусор", "корзина"]
 
 # ---------------------------------------------------------------- состав выгрузки
-INCLUDE_EMAILS = False     # письма (активности TYPE_ID=3)
-INCLUDE_COMMENTS = True    # комментарии таймлайна (важный контекст для ИИ)
-INCLUDE_MEETINGS = False   # встречи (TYPE_ID=1)
-INCLUDE_TASKS = True       # задачи по сделке/лиду (scope task не входит в базовый
-                           # перечень прав вебхука — без него задачи пропускаются с warning)
+INCLUDE_EMAILS = False  # письма (активности TYPE_ID=3)
+INCLUDE_COMMENTS = True  # комментарии таймлайна (важный контекст для ИИ)
+INCLUDE_MEETINGS = False  # встречи (TYPE_ID=1)
+INCLUDE_TASKS = True  # задачи по сделке/лиду (scope task не входит в базовый
+# перечень прав вебхука — без него задачи пропускаются с warning)
 
 # Источник сделки (штатное поле SOURCE_ID) выводится в заголовок протокола.
 # Название резолвится из справочника crm.status.list (ENTITY_ID=SOURCE).
 
 # ---------------------------------------------------------------- разделение по стадиям
 # Активные, завершённые и технические сделки собираются в отдельные выгрузки.
-PROCESS_ACTIVE = True       # CLOSED = N
-PROCESS_COMPLETED = True    # CLOSED = Y
-PROCESS_TECHNICAL = True    # технические финальные стадии (дубли/тесты/мусор)
+PROCESS_ACTIVE = True  # CLOSED = N
+PROCESS_COMPLETED = True  # CLOSED = Y
+PROCESS_TECHNICAL = True  # технические финальные стадии (дубли/тесты/мусор)
 
 # Классификация технических сделок — важно для конверсии:
 # технический дубль НЕ должен считаться проигранной продажей.
@@ -70,11 +72,20 @@ PROCESS_TECHNICAL = True    # технические финальные стад
 TECHNICAL_STAGE_IDS = {}
 # 2) Подстраховка: ключевые слова в НАЗВАНИИ стадии (регистронезависимо).
 #    Срабатывает, если название финальной стадии содержит любое из слов.
-TECHNICAL_STAGE_KEYWORDS = ["дубль", "тест", "битое", "битый", "мусор",
-                            "ошибка", "junk", "spam", "несуществующ"]
+TECHNICAL_STAGE_KEYWORDS = [
+    "дубль",
+    "тест",
+    "битое",
+    "битый",
+    "мусор",
+    "ошибка",
+    "junk",
+    "spam",
+    "несуществующ",
+]
 
 # ---------------------------------------------------------------- снимок / поставка
-SCHEMA_VERSION = 2          # версия схемы выгрузки (идёт в имена файлов и manifest)
+SCHEMA_VERSION = 2  # версия схемы выгрузки (идёт в имена файлов и manifest)
 # Единый часовой пояс снимка: snapshot_at в manifest, SNAP_ в именах
 # карточек и дата-время в имени ZIP формируются из ОДНОГО момента
 # времени в этой TZ — расхождения исключены.
@@ -82,8 +93,8 @@ SNAPSHOT_TZ = "Europe/Minsk"
 # Шаблон имени итогового архива. {stamp} = «ГГГГ-ММ-ДД ЧЧ-ММ» в SNAPSHOT_TZ.
 ZIP_NAME_TEMPLATE = "LEXS выгрузка из Битрикс24 на дату {stamp}"
 # Период выгрузки. None = предыдущая календарная неделя (пн–вс) от даты снимка.
-EXPORT_PERIOD_FROM = None   # напр. "2026-07-27"
-EXPORT_PERIOD_TO = None     # напр. "2026-08-02"
+EXPORT_PERIOD_FROM = None  # напр. "2026-07-27"
+EXPORT_PERIOD_TO = None  # напр. "2026-08-02"
 # Запаковывать export/snapshot в итоговый zip после прохода
 MAKE_SNAPSHOT_ZIP = True
 
@@ -105,24 +116,30 @@ INCREMENTAL_OVERLAP_HOURS = 24
 REEXPORT_CLOSED_ON_CHANGE = False
 
 # Префиксы в именах файлов (для файловой индексации в LEX'S).
-FILE_BRAND = "LEXS"       # LEXS_DEAL_... / LEXS_SALES_...
-# Страна берётся из ПОЛЯ СДЕЛКИ (РБ/РФ): код страны подставляется в имя
-# файла каждой сделки. Поле находится автоматически по названию («страна»),
-# либо задайте его код явно, напр. COUNTRY_FIELD = "UF_CRM_1234567890".
-COUNTRY_FIELD = None      # None = автоопределение по названию поля
-FILE_COUNTRY = "RB"       # только запасной вариант, если поле пустое/не найдено
+FILE_BRAND = "LEXS"  # LEXS_DEAL_... / LEXS_SALES_...
+# Служебная страна сделки — по ID воронки; переименование её не меняет.
+# У лидов страна определяется по префиксу _source: РБ / Россия / РФ.
+# Неизвестная страна — UNKNOWN. Исходное поле Bitrix «Страна» не изменяется.
+DEAL_COUNTRY_BY_CATEGORY = {
+    0: "RB",  # РБ OFF
+    34: "RB",  # РБ ON
+    36: "RB",  # РБ Отложенный спрос
+    6: "RB",  # Кухни ON+OFF
+    28: "RF",  # Россия OFF
+    32: "RF",  # Россия ON
+    38: "RF",  # РФ Отложенный спрос
+}
 
 # ---------------------------------------------------------------- транскрибация
 TRANSCRIBE_ENABLED = True
 PREFER_BUILTIN_TRANSCRIPT = False  # True — сначала брать штатную AI-расшифровку Bitrix
 
-# AssemblyAI. Ключ безопаснее задать переменной окружения ASSEMBLYAI_API_KEY
-# (или в файле .env рядом с config.py)
+# AssemblyAI. Задайте ASSEMBLYAI_API_KEY в .env рядом с config.py.
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "")
 ASSEMBLYAI_LANGUAGE = "ru"
-ASSEMBLYAI_SPEAKERS = 2        # подсказка диаризации: менеджер + клиент
-ASSEMBLYAI_POLL_INTERVAL = 3   # секунд между опросами статуса
-ASSEMBLYAI_TIMEOUT = 900       # максимум ожидания результата, сек
+ASSEMBLYAI_SPEAKERS = 2  # подсказка диаризации: менеджер + клиент
+ASSEMBLYAI_POLL_INTERVAL = 3  # секунд между опросами статуса
+ASSEMBLYAI_TIMEOUT = 900  # максимум ожидания результата, сек
 # True: AssemblyAI забирает запись САМ по подписанной ссылке Диска Битрикса —
 # без скачивания на локальный диск (быстрее, audio/ не растёт).
 # При ошибке ссылки автоматически fallback на скачивание + upload.
@@ -138,17 +155,19 @@ MIN_RECORDING_DURATION_SEC = 15
 DOWNLOAD_RECORDINGS = True
 
 # ---------------------------------------------------------------- сеть
-REQUEST_PAUSE = 0.55       # пауза между запросами (облако: ~2 запроса/сек)
+REQUEST_PAUSE = 0.55  # пауза между запросами (облако: ~2 запроса/сек)
 MAX_RETRIES = 5
 REQUEST_TIMEOUT = 60
 
 # ---------------------------------------------------------------- пути
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")           # кэши, состояние синхронизации
-RAW_DIR = os.path.join(BASE_DIR, "raw")             # сырой JSON из API
-AUDIO_DIR = os.path.join(BASE_DIR, "audio")         # записи звонков
+DEBUG_LOG_PATH = os.path.join(BASE_DIR, "debug.log")  # DEBUG и выше, включая ошибки
+ERROR_LOG_PATH = os.path.join(BASE_DIR, "error.log")  # только ERROR и CRITICAL
+DATA_DIR = os.path.join(BASE_DIR, "data")  # кэши, состояние синхронизации
+RAW_DIR = os.path.join(BASE_DIR, "raw")  # сырой JSON из API
+AUDIO_DIR = os.path.join(BASE_DIR, "audio")  # записи звонков
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")  # тексты транскрипций
-EXPORT_DIR = os.path.join(BASE_DIR, "export")       # итог: jsonl + md для ИИ
+EXPORT_DIR = os.path.join(BASE_DIR, "export")  # итог: jsonl + md для ИИ
 
 for _d in (DATA_DIR, RAW_DIR, AUDIO_DIR, TRANSCRIPTS_DIR, EXPORT_DIR):
     os.makedirs(_d, exist_ok=True)

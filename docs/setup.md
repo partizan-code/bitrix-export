@@ -26,12 +26,14 @@ python -m venv venv
 python -m pip install -r requirements.txt
 ```
 
-`requests` обязателен; `python-dotenv` читает `.env`.
+`requests` нужен для HTTP-запросов; `python-dotenv` — для загрузки секретов из `.env`;
+`loguru` — для [файлового логирования](operations.md#логирование).
 Бот имеет [отдельную зависимость](operations.md#telegram-бот).
 
 Создайте входящий вебхук Bitrix24 с правами `crm`, `im`, `imopenlines`,
-`telephony`, `user`; для задач добавьте `task`. Секреты задаются в окружении
-или `.env` рядом с config (нужен `python-dotenv`):
+`telephony`, `user`; для задач добавьте `task`. Секреты храните в файле `.env`
+рядом с `config.py`. При импорте `config.py` вызов `load_dotenv()` загружает
+значения из этого файла:
 
 ```dotenv
 B24_WEBHOOK=https://<portal>/rest/<user_id>/<secret>/
@@ -89,9 +91,10 @@ snapshot и возможный ZIP. `--no-transcribe` не запрещает с
 | `EXPORT_TYPE`, `INCREMENTAL_OVERLAP_HOURS` | `auto` / `full` / `incremental`; перекрытие 24 ч |
 | `REEXPORT_CLOSED_ON_CHANGE` | `False`: закрытые переиспользуются даже после изменений |
 | `SCHEMA_VERSION`, `SNAPSHOT_TZ`, `MAKE_SNAPSHOT_ZIP` | Схема 2, `Europe/Minsk`, ZIP включён |
-| `FILE_BRAND`, `COUNTRY_FIELD`, `FILE_COUNTRY`, `ZIP_NAME_TEMPLATE` | Бренд, поле/запасная страна, имя архива |
+| `FILE_BRAND`, `DEAL_COUNTRY_BY_CATEGORY`, `ZIP_NAME_TEMPLATE` | Бренд, соответствие ID воронки и страны сделки, имя архива; [правила страны](data.md#файлы-результата) |
 | `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,55 с, 5 попыток, тайм-аут 60 с |
 | `DATA_DIR`, `RAW_DIR`, `AUDIO_DIR`, `TRANSCRIPTS_DIR`, `EXPORT_DIR` | Пути через `os.path` относительно каталога проекта |
+| `DEBUG_LOG_PATH`, `ERROR_LOG_PATH` | `debug.log` и `error.log` в корне проекта, независимо от текущего каталога запуска |
 
 Полный режим применяет период только при **обеих** границах: FROM `00:00:00`,
 TO `23:59:59`. `DATE_FROM` заменяет начало периода, сохраняя верхнюю границу TO.
@@ -112,8 +115,8 @@ TO `23:59:59`. `DATE_FROM` заменяет начало периода, сох�
 `TRANSCRIBE_ENABLED=True` и отсутствии `--skip-transcribe`. Сейчас штатный приоритет
 выключен, AssemblyAI включён.
 
-- AssemblyAI: ключ `ASSEMBLYAI_API_KEY`, язык `ru`, подсказка 2 спикера,
-  опрос каждые 3 с, ожидание до 900 с. Настройки `ASSEMBLYAI_*`.
+- AssemblyAI: ключ `ASSEMBLYAI_API_KEY` из `.env` через `config.py`, язык `ru`,
+  подсказка 2 спикера, опрос каждые 3 с, ожидание до 900 с. Настройки `ASSEMBLYAI_*`.
 
 `ASSEMBLYAI_DIRECT_URL=True` передаёт провайдеру авторизованный `DOWNLOAD_URL`
 Диска; локального аудио может не быть. При ошибке — скачивание и upload.

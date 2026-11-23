@@ -25,7 +25,6 @@ FULL_SNAPSHOT — без переобработки сделок и лидов: 
 
 import argparse
 import json
-import logging
 import os
 import re
 import shutil
@@ -35,10 +34,16 @@ import export_llm
 import fetch_deals
 import fetch_leads
 import store
-from users import (load_users, load_stages, load_lead_statuses, load_sources,
-                   load_categories, user_name, LazyUserMap)
-
-log = logging.getLogger("b24")
+from logging_setup import log, run_cli
+from users import (
+    LazyUserMap,
+    load_categories,
+    load_lead_statuses,
+    load_sources,
+    load_stages,
+    load_users,
+    user_name,
+)
 
 _USER_PLACEHOLDER = re.compile(r"\buser_\d+\b")
 
@@ -67,62 +72,79 @@ def _int_keys(d):
 def load_books(offline):
     """users_map, stages по сущностям, fields_meta, status_maps, category_map."""
     if offline:
-        users_map = _int_keys(_load_json(
-            os.path.join(config.DATA_DIR, "users_cache.json"), {}))
+        users_map = _int_keys(
+            _load_json(os.path.join(config.DATA_DIR, "users_cache.json"), {})
+        )
         if not users_map:
-            raise SystemExit("data/users_cache.json пуст — в offline-режиме "
-                             "имена взять неоткуда. Запустите без --offline.")
+            raise SystemExit(
+                "data/users_cache.json пуст — в offline-режиме "
+                "имена взять неоткуда. Запустите без --offline."
+            )
         stages = {
             "deal": _load_json(os.path.join(config.DATA_DIR, "stages.json"), {}),
             "lead": _load_json(os.path.join(config.DATA_DIR, "lead_statuses.json"), {}),
         }
         fields_meta = {
-            "deal": _load_json(os.path.join(config.DATA_DIR, "deal_fields_meta.json"), {}),
-            "lead": _load_json(os.path.join(config.DATA_DIR, "lead_fields_meta.json"), {}),
+            "deal": _load_json(
+                os.path.join(config.DATA_DIR, "deal_fields_meta.json"), {}
+            ),
+            "lead": _load_json(
+                os.path.join(config.DATA_DIR, "lead_fields_meta.json"), {}
+            ),
         }
         category_map = _load_json(
-            os.path.join(config.DATA_DIR, "categories.json"),
-            {"0": "Основная воронка"})
+            os.path.join(config.DATA_DIR, "categories.json"), {"0": "Основная воронка"}
+        )
         source_map = _load_json(os.path.join(config.DATA_DIR, "sources.json"), {})
-        log.info("Offline: пользователей %d, стадий сделок %d, статусов лидов %d",
-                 len(users_map), len(stages["deal"]), len(stages["lead"]))
+        log.info(
+            "Offline: пользователей {}, стадий сделок {}, статусов лидов {}",
+            len(users_map),
+            len(stages["deal"]),
+            len(stages["lead"]),
+        )
     else:
         from api_client import B24Client
+
         client = B24Client()
         # LazyUserMap: неизвестные ID (уволенные/боты) дозапрашиваются точечно
         users_map = LazyUserMap(client, load_users(client))
         stages = {"deal": load_stages(client), "lead": {}}
         try:
             stages["lead"] = load_lead_statuses(client)
-        except Exception as e:
-            log.warning("Статусы лидов не получены: %s", e)
+        except Exception as e:  # noqa: BLE001 — необязательный справочник не останавливает обновление
+            log.warning("Статусы лидов не получены: {}", e)
         try:
             source_map = load_sources(client)
-        except Exception as e:
-            log.warning("Источники не получены: %s", e)
+        except Exception as e:  # noqa: BLE001 — при сбое справочника сохраняется источник из store
+            log.warning("Источники не получены: {}", e)
             source_map = {}
         fields_meta = {"deal": {}, "lead": {}}
         try:
             fields_meta["deal"] = fetch_deals.load_deal_fields_meta(client)
-        except Exception as e:
-            log.warning("Метаданные полей сделки не получены: %s", e)
+        except Exception as e:  # noqa: BLE001 — без метаданных доступна замена имён по store
+            log.warning("Метаданные полей сделки не получены: {}", e)
         try:
             fields_meta["lead"] = fetch_leads.load_lead_fields_meta(client)
-        except Exception as e:
-            log.warning("Метаданные полей лида не получены: %s", e)
+        except Exception as e:  # noqa: BLE001 — без метаданных доступна замена имён по store
+            log.warning("Метаданные полей лида не получены: {}", e)
         try:
             category_map = load_categories(client)
-        except Exception as e:
-            log.warning("Воронки не получены: %s", e)
+        except Exception as e:  # noqa: BLE001 — при сбое справочника используем локальный кэш
+            log.warning("Воронки не получены: {}", e)
             category_map = _load_json(
                 os.path.join(config.DATA_DIR, "categories.json"),
-                {"0": "Основная воронка"})
+                {"0": "Основная воронка"},
+            )
         if category_map:
             path = os.path.join(config.DATA_DIR, "categories.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(category_map, f, ensure_ascii=False, indent=1)
-        log.info("Пользователей: %d, стадий сделок: %d, статусов лидов: %d",
-                 len(users_map), len(stages["deal"]), len(stages["lead"]))
+        log.info(
+            "Пользователей: {}, стадий сделок: {}, статусов лидов: {}",
+            len(users_map),
+            len(stages["deal"]),
+            len(stages["lead"]),
+        )
 
     status_maps = {
         "deal": {"DEAL_STAGE": stages["deal"], "SOURCE": source_map},
@@ -181,23 +203,28 @@ def refresh_touchpoint_names(tps, users_map):
 
 # ------------------------------------------------------------- main
 def main():
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser(
-        description="Обновить имена в сохранённых протоколах и перепаковать")
-    ap.add_argument("--offline", action="store_true",
-                    help="не ходить на портал: справочники из data/*.json")
+        description="Обновить имена в сохранённых протоколах и перепаковать"
+    )
+    ap.add_argument(
+        "--offline",
+        action="store_true",
+        help="не ходить на портал: справочники из data/*.json",
+    )
     args = ap.parse_args()
 
-    (users_map, stages, fields_meta,
-     status_maps, category_map) = load_books(args.offline)
+    (users_map, stages, fields_meta, status_maps, category_map) = load_books(
+        args.offline
+    )
 
     ctx = export_llm.ExportContext()
-    entities = {ent: {"groups": {g: [] for g in export_llm.ALL_GROUPS},
-                      "errors": []}
-                for ent in export_llm.ENTITIES}
-    all_tps = {ent: {g: [] for g in export_llm.ALL_GROUPS}
-               for ent in export_llm.ENTITIES}
+    entities = {
+        ent: {"groups": {g: [] for g in export_llm.ALL_GROUPS}, "errors": []}
+        for ent in export_llm.ENTITIES
+    }
+    all_tps = {
+        ent: {g: [] for g in export_llm.ALL_GROUPS} for ent in export_llm.ENTITIES
+    }
     changed = 0
 
     # стейджинг нового снимка — с нуля, все папки создаются всегда
@@ -209,7 +236,7 @@ def main():
         ids = store.stored_ids(entity=entity)
         if not ids:
             continue
-        log.info("%s: сущностей в store: %d", entity, len(ids))
+        log.info("{}: сущностей в store: {}", entity, len(ids))
         stages_map = stages[entity]
         fmeta = fields_meta[entity]
         smap = status_maps[entity]
@@ -232,34 +259,40 @@ def main():
             # 1) поля-сотрудники
             if fmeta:
                 deal["_fields"] = fetch_deals.resolve_deal_fields(
-                    deal, fmeta, users_map, smap, cats)
+                    deal, fmeta, users_map, smap, cats
+                )
             else:
                 patch_fields_offline(deal, users_map)
             stats["fields"] = deal.get("_fields") or {}
+            deal["_source"] = smap["SOURCE"].get(
+                str(deal.get("SOURCE_ID"))
+            ) or deal.get("_source")
+            deal["_country"] = export_llm.entity_country(deal, entity)
+            stats["country"] = deal["_country"]
 
             # 2) имена в ленте касаний
             refresh_touchpoint_names(tps, users_map)
 
             # 3) перерендер markdown с актуальными именами
-            md_text = export_llm.deal_markdown(deal, tps, users_map,
-                                               stages_map, entity=entity)
+            md_text = export_llm.deal_markdown(
+                deal, tps, users_map, stages_map, entity=entity
+            )
 
             # обратно в store (теперь store всегда с актуальными именами)
             store.save_artifacts(deal, md_text, tps, stats, entity=entity)
 
             # в стейджинг нового снимка — с именем ЭТОГО снимка
-            export_llm.write_deal_markdown_copy(md_text, deal, group, ctx,
-                                                cats, entity=entity)
+            export_llm.write_deal_markdown_copy(
+                md_text, deal, group, ctx, cats, entity=entity
+            )
             stats["reused"] = True
             stats["group"] = group
             stats.setdefault(id_key, did)
-            if not stats.get("country"):
-                stats["country"] = deal.get("_country") or config.FILE_COUNTRY
             entities[ent_block]["groups"][group].append(stats)
             all_tps[ent_block][group].extend(tps)
             changed += 1
             if i % 500 == 0:
-                log.info("%s [%d/%d] обновлено", entity, i, len(ids))
+                log.info("{} [{}/{}] обновлено", entity, i, len(ids))
 
     # сопутствующие файлы выгрузки (в export/, в архив не попадают)
     for ent, ent_block in (("deal", "deals"), ("lead", "leads")):
@@ -270,26 +303,37 @@ def main():
             tps = all_tps[ent_block][group]
             tps.sort(key=lambda t: (t["deal_id"], t["timestamp"] or ""))
             export_llm.write_touchpoints_jsonl(
-                tps, os.path.join(config.EXPORT_DIR,
-                                  f"touchpoints_{ent}_{group}.jsonl"))
+                tps, os.path.join(config.EXPORT_DIR, f"touchpoints_{ent}_{group}.jsonl")
+            )
             export_llm.write_deals_index(
-                idx,
-                os.path.join(config.EXPORT_DIR,
-                             f"index_{ent}_{group}.jsonl"))
+                idx, os.path.join(config.EXPORT_DIR, f"index_{ent}_{group}.jsonl")
+            )
 
-    pipelines = [{"id": cid, "name": category_map.get(cid, cid),
-                  "code": export_llm.pipeline_slug(category_map.get(cid, cid))}
-                 for cid in sorted(category_map.keys() or ["0"])]
-    filter_desc = {"note": "refresh_names: обновлены имена "
-                           "(ответственный/менеджеры/поля-сотрудники) "
-                           "без переобработки сделок и лидов"}
-    export_llm.write_manifest(ctx, pipelines, entities,
-                              errors=[], skipped=[],
-                              filter_desc=filter_desc,
-                              incremental={"update_mode": "FULL"})
+    pipelines = [
+        {
+            "id": cid,
+            "name": category_map.get(cid, cid),
+            "code": export_llm.pipeline_slug(category_map.get(cid, cid)),
+        }
+        for cid in sorted(category_map.keys() or ["0"])
+    ]
+    filter_desc = {
+        "note": "refresh_names: обновлены имена "
+        "(ответственный/менеджеры/поля-сотрудники) "
+        "без переобработки сделок и лидов"
+    }
+    export_llm.write_manifest(
+        ctx,
+        pipelines,
+        entities,
+        errors=[],
+        skipped=[],
+        filter_desc=filter_desc,
+        incremental={"update_mode": "FULL"},
+    )
     archive = export_llm.make_snapshot_zip(ctx)
-    log.info("Готово: обновлено %d протоколов -> %s", changed, archive)
+    log.info("Готово: обновлено {} протоколов -> {}", changed, archive)
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

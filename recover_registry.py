@@ -14,6 +14,7 @@ import time
 import config
 import registry
 import store
+from logging_setup import run_cli
 
 
 def main():
@@ -50,4 +51,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

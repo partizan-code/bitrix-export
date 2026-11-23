@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Экспорт для ИИ.
 
@@ -18,23 +19,52 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import config
+from logging_setup import log
 from users import user_name
 
 
 def _tz():
     try:
         return ZoneInfo(config.SNAPSHOT_TZ)
-    except Exception:
+    except Exception:  # noqa: BLE001 — сбой системной TZ не должен прерывать выгрузку
         return datetime.now().astimezone().tzinfo
 
 
 # ================================================================== контекст снимка
 _RU2LAT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "e",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "h",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "sch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
 }
 
 
@@ -47,44 +77,46 @@ def pipeline_slug(name):
     return slug or "NOPPE"
 
 
-# ------------------------------------------------------------------ страна сделки
-_COUNTRY_MAP = {
-    "рб": "RB", "беларусь": "RB", "республика беларусь": "RB",
-    "belarus": "RB", "by": "RB", "rb": "RB",
-    "рф": "RF", "россия": "RF", "российская федерация": "RF",
-    "russia": "RF", "ru": "RF", "rf": "RF",
-}
+# ------------------------------------------------------------- служебная страна
+def entity_country(record: dict, entity: str = "deal") -> str:
+    """Страна выгрузки: воронка сделки или источник лида; поля CRM не меняются."""
+    if entity == "deal":
+        try:
+            category_id = int(record.get("CATEGORY_ID"))
+        except (TypeError, ValueError):
+            category_id = None
+        code = config.DEAL_COUNTRY_BY_CATEGORY.get(category_id)
+        if code:
+            return code
+    elif entity == "lead":
+        source = str(record.get("_source") or "").strip()
+        match = re.match(r"^(РБ|Россия|РФ)\b", source, re.IGNORECASE)
+        if match:
+            return "RB" if match[1].lower() == "рб" else "RF"
+    else:
+        raise ValueError(f"Неизвестный тип сущности: {entity}")
+    log.warning(
+        "{} {}: страна не определена, использую UNKNOWN", entity, record.get("ID")
+    )
+    return "UNKNOWN"
 
 
-def normalize_country(value):
-    """'РБ'/'Беларусь' -> 'RB', 'РФ'/'Россия' -> 'RF'; прочее -> slug."""
-    v = str(value or "").strip().lower()
-    if not v:
-        return ""
-    if v in _COUNTRY_MAP:
-        return _COUNTRY_MAP[v]
-    return pipeline_slug(v)
-
-
-def deal_country(deal):
-    """
-    Код страны сделки для имени файла: из поля сделки «Страна»
-    (config.COUNTRY_FIELD или автоопределение по названию), иначе
-    запасной config.FILE_COUNTRY.
-    """
-    fields = deal.get("_fields") or {}
-    if config.COUNTRY_FIELD:
-        f = fields.get(config.COUNTRY_FIELD)
-        if f:
-            code = normalize_country(f.get("value"))
-            if code:
-                return code
-    for f in fields.values():
-        if "страна" in str(f.get("title") or "").lower():
-            code = normalize_country(f.get("value"))
-            if code:
-                return code
-    return config.FILE_COUNTRY
+def update_card_country(md_text: str, country: str) -> str:
+    """Обновить только страну в шапке сохранённой карточки, сохранив её формат."""
+    header, separator, body = md_text.partition("\n## ")
+    pattern = r"(?m)^- Страна: [^\r\n]*"
+    if re.search(pattern, header):
+        header = re.sub(pattern, lambda _: f"- Страна: {country}", header, count=1)
+    else:
+        # Позиция соответствует deal_markdown: после источника или стадии/статуса.
+        anchor = r"(?m)^- (?:Источник|Текущая стадия|Текущий статус): [^\r\n]*"
+        matches = list(re.finditer(anchor, header))
+        if not matches:
+            raise ValueError("В карточке не найдена шапка для обновления страны")
+        pos = matches[-1].end()
+        newline = "\r\n" if "\r\n" in header else "\n"
+        header = header[:pos] + newline + f"- Страна: {country}" + header[pos:]
+    return header + separator + body
 
 
 class ExportContext:
@@ -113,11 +145,21 @@ class ExportContext:
     def export_id(self):
         return f"EXP_{self.snap}"
 
+
 CHANNEL_ICON = {
-    "call": "📞", "viber": "💬 Viber", "telegram": "💬 Telegram",
-    "whatsapp": "💬 WhatsApp", "vk": "💬 VK", "site_chat": "💬 чат сайта",
-    "instagram": "💬 Instagram", "avito": "💬 Avito",
-    "email": "✉️", "comment": "📝", "meeting": "🤝", "crm": "📌", "task": "📋",
+    "call": "📞",
+    "viber": "💬 Viber",
+    "telegram": "💬 Telegram",
+    "whatsapp": "💬 WhatsApp",
+    "vk": "💬 VK",
+    "site_chat": "💬 чат сайта",
+    "instagram": "💬 Instagram",
+    "avito": "💬 Avito",
+    "email": "✉️",
+    "comment": "📝",
+    "meeting": "🤝",
+    "crm": "📌",
+    "task": "📋",
 }
 
 
@@ -130,16 +172,16 @@ def _fmt_dur(sec):
 def write_touchpoints_jsonl(all_touchpoints, path=None):
     path = path or os.path.join(config.EXPORT_DIR, "touchpoints.jsonl")
     with open(path, "w", encoding="utf-8") as f:
-        for tp in all_touchpoints:
-            f.write(json.dumps(tp, ensure_ascii=False) + "\n")
+        f.writelines(
+            json.dumps(tp, ensure_ascii=False) + "\n" for tp in all_touchpoints
+        )
     return path
 
 
 def write_deals_index(deals_meta, path=None):
     path = path or os.path.join(config.EXPORT_DIR, "deals_index.jsonl")
     with open(path, "w", encoding="utf-8") as f:
-        for d in deals_meta:
-            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        f.writelines(json.dumps(d, ensure_ascii=False) + "\n" for d in deals_meta)
     return path
 
 
@@ -147,15 +189,38 @@ def write_deals_index(deals_meta, path=None):
 # Папки внутри архива/стейджинга — человекочитаемые, русские (ТЗ заказчика);
 # имена карточек остаются машинными (LEXS_DEAL_... / LEXS_LEAD_...).
 ENTITY_DIR = {"deal": "Сделки", "lead": "Лиды"}
-GROUP_DIR = {"active": "Активные", "completed": "Завершенные",
-             "technical": "Технические"}
+GROUP_DIR = {
+    "active": "Активные",
+    "completed": "Завершенные",
+    "technical": "Технические",
+}
 # поля, уже показанные в шапке карточки (не дублируем в «## Поля»)
 _SHOWN_FIELDS = {
-    "deal": {"ID", "TITLE", "ASSIGNED_BY_ID", "CONTACT_ID", "STAGE_ID",
-             "OPPORTUNITY", "CURRENCY_ID", "DATE_CREATE", "SOURCE_ID"},
-    "lead": {"ID", "TITLE", "NAME", "LAST_NAME", "SECOND_NAME",
-             "ASSIGNED_BY_ID", "STATUS_ID", "OPPORTUNITY", "CURRENCY_ID",
-             "DATE_CREATE", "SOURCE_ID", "COMPANY_TITLE"},
+    "deal": {
+        "ID",
+        "TITLE",
+        "ASSIGNED_BY_ID",
+        "CONTACT_ID",
+        "STAGE_ID",
+        "OPPORTUNITY",
+        "CURRENCY_ID",
+        "DATE_CREATE",
+        "SOURCE_ID",
+    },
+    "lead": {
+        "ID",
+        "TITLE",
+        "NAME",
+        "LAST_NAME",
+        "SECOND_NAME",
+        "ASSIGNED_BY_ID",
+        "STATUS_ID",
+        "OPPORTUNITY",
+        "CURRENCY_ID",
+        "DATE_CREATE",
+        "SOURCE_ID",
+        "COMPANY_TITLE",
+    },
 }
 
 
@@ -294,56 +359,78 @@ def card_filename(deal, ctx, pipeline_map=None, entity="deal"):
       сделка: LEXS_DEAL_<CTRY>_<PIPELINE>_<ID>_SNAP_<ts>_schema-vN.md
       лид:    LEXS_LEAD_<CTRY>_<ID>_SNAP_<ts>_schema-vN.md  (воронки нет)
     """
-    country = deal.get("_country") or config.FILE_COUNTRY
+    country = deal.get("_country") or entity_country(deal, entity)
     kind = "LEAD" if entity == "lead" else "DEAL"
     parts = [config.FILE_BRAND, kind, country]
     if entity != "lead":
         cat = str(deal.get("CATEGORY_ID") or "0")
         parts.append(pipeline_slug((pipeline_map or {}).get(cat, cat)))
-    parts += [str(int(deal["ID"])), "SNAP", ctx.snap,
-              f"schema-v{ctx.schema_version}"]
+    parts += [str(int(deal["ID"])), "SNAP", ctx.snap, f"schema-v{ctx.schema_version}"]
     return "_".join(parts) + ".md"
 
 
-def write_deal_markdown(deal, touchpoints, users_map, stages_map, group=None,
-                        ctx=None, pipeline_map=None, entity="deal"):
-    out_dir = os.path.join(snapshot_root(), ENTITY_DIR[entity],
-                           GROUP_DIR.get(group, group or ""))
+def write_deal_markdown(
+    deal,
+    touchpoints,
+    users_map,
+    stages_map,
+    group=None,
+    ctx=None,
+    pipeline_map=None,
+    entity="deal",
+):
+    out_dir = os.path.join(
+        snapshot_root(), ENTITY_DIR[entity], GROUP_DIR.get(group, group or "")
+    )
     os.makedirs(out_dir, exist_ok=True)
-    fname = card_filename(deal, ctx, pipeline_map, entity) if ctx is not None \
+    fname = (
+        card_filename(deal, ctx, pipeline_map, entity)
+        if ctx is not None
         else f"{entity}_{int(deal['ID'])}.md"
+    )
     path = os.path.join(out_dir, fname)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(deal_markdown(deal, touchpoints, users_map, stages_map,
-                              entity=entity))
+        f.write(deal_markdown(deal, touchpoints, users_map, stages_map, entity=entity))
     return path
 
 
-def write_deal_markdown_copy(md_text, deal, group, ctx, pipeline_map,
-                             entity="deal"):
+def write_deal_markdown_copy(md_text, deal, group, ctx, pipeline_map, entity="deal"):
     """
     Перенос готового протокола из store в текущий снимок:
-    то же содержимое, но имя файла — с датой ЭТОГО снимка.
+    Страна шапки пересчитана, имя файла — с датой ЭТОГО снимка.
     Для неизменных закрытых/технических сделок/лидов (без переобработки).
     """
-    out_dir = os.path.join(snapshot_root(), ENTITY_DIR[entity],
-                           GROUP_DIR.get(group, group))
+    out_dir = os.path.join(
+        snapshot_root(), ENTITY_DIR[entity], GROUP_DIR.get(group, group)
+    )
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, card_filename(deal, ctx, pipeline_map, entity))
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(md_text)
+    md_text = update_card_country(
+        md_text, deal.get("_country") or entity_country(deal, entity)
+    )
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(md_text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return path
 
 
 # ================================================================== manifest + zip
 ALL_GROUPS = ("active", "completed", "technical")
-ENTITIES = ("deals", "leads")          # блоки manifest (сделки / лиды)
+ENTITIES = ("deals", "leads")  # блоки manifest (сделки / лиды)
 
 
 def _entity_block(groups_index, errors):
     """Блок manifest по одной сущности (сделки или лиды)."""
-    entity = "leads" if any("lead_id" in d for g in groups_index.values()
-                            for d in g) else "deals"
+    entity = (
+        "leads"
+        if any("lead_id" in d for g in groups_index.values() for d in g)
+        else "deals"
+    )
     id_key = "lead_ids" if entity == "leads" else "deal_ids"
 
     def _id(d):
@@ -360,10 +447,13 @@ def _entity_block(groups_index, errors):
         # все три группы описываются всегда, даже пустые;
         # reused — сколько перенесено из store без переобработки
         "groups": {
-            g: {"count": len(groups_index.get(g) or []),
-                "reused": sum(1 for d in (groups_index.get(g) or [])
-                              if d.get("reused")),
-                "ids": sorted(_id(d) for d in (groups_index.get(g) or []))}
+            g: {
+                "count": len(groups_index.get(g) or []),
+                "reused": sum(
+                    1 for d in (groups_index.get(g) or []) if d.get("reused")
+                ),
+                "ids": sorted(_id(d) for d in (groups_index.get(g) or [])),
+            }
             for g in ALL_GROUPS
         },
         "errors_count": len(errors or []),
@@ -371,8 +461,9 @@ def _entity_block(groups_index, errors):
     }
 
 
-def write_manifest(ctx, pipelines, entities, errors, skipped, filter_desc,
-                   incremental=None):
+def write_manifest(
+    ctx, pipelines, entities, errors, skipped, filter_desc, incremental=None
+):
     """
     manifest.json — в корень снимка (export/snapshot/).
 
@@ -392,16 +483,14 @@ def write_manifest(ctx, pipelines, entities, errors, skipped, filter_desc,
     all_stats = []
     for ent in ENTITIES:
         data = entities.get(ent) or {}
-        blocks[ent] = _entity_block(data.get("groups") or {},
-                                    data.get("errors") or [])
-        all_stats += [d for g in (data.get("groups") or {}).values()
-                      for d in g]
+        blocks[ent] = _entity_block(data.get("groups") or {}, data.get("errors") or [])
+        all_stats += [d for g in (data.get("groups") or {}).values() for d in g]
     all_errors = list(errors or [])
-    is_complete = not all_errors and all(b["errors_count"] == 0
-                                         for b in blocks.values())
+    is_complete = not all_errors and all(
+        b["errors_count"] == 0 for b in blocks.values()
+    )
     creates = [d.get("date_create") for d in all_stats if d.get("date_create")]
-    countries = sorted({d.get("country") for d in all_stats
-                        if d.get("country")})
+    countries = sorted({d.get("country") for d in all_stats if d.get("country")})
     manifest = {
         "export_id": ctx.export_id,
         "export_type": "FULL_SNAPSHOT",
@@ -411,7 +500,7 @@ def write_manifest(ctx, pipelines, entities, errors, skipped, filter_desc,
         "schema_version": ctx.schema_version,
         "snapshot_at": self_iso(ctx.started),
         "snapshot_timezone": config.SNAPSHOT_TZ,
-        # страны — из полей сделок/лидов (может быть несколько: РБ и РФ)
+        # Служебные страны: воронки сделок и источники лидов.
         "countries": countries,
         # --- техническая информация о способе сборки (не про состав архива)
         "update_mode": incremental.get("update_mode", "FULL"),
@@ -422,8 +511,10 @@ def write_manifest(ctx, pipelines, entities, errors, skipped, filter_desc,
         # ---
         "pipelines": pipelines,
         # фактический охват снимка: от самого старого объекта до даты снимка
-        "coverage": {"from": min(creates) if creates else None,
-                     "to": self_iso(ctx.started)},
+        "coverage": {
+            "from": min(creates) if creates else None,
+            "to": self_iso(ctx.started),
+        },
         "filter": filter_desc,
         # логически отдельные блоки по сущностям (количества, ID, ошибки)
         "deals": blocks["deals"],
