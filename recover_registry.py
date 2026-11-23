@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Восстановление data/registry.json из store после ПРЕРВАННОГО прогона.
 

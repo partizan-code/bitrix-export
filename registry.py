@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Реестр выгруженных сущностей (data/registry.json).
 
