@@ -1,4 +1,0 @@
-requests>=2.31
-loguru>=0.7.3,<0.8
-# Загрузка секретов из .env через config.py:
-python-dotenv>=1.0

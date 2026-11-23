@@ -4,31 +4,48 @@
 
 ## Окружение и доступ
 
-Python 3.12, плоские модули в корне, `venv/` и
-[requirements.txt](../requirements.txt); пакетной сборки и CI нет.
+Python 3.12, плоские модули в корне; пакетной сборки и CI нет.
+Версии Python и uv закреплены в [mise.toml](../mise.toml).
+Зависимости объявлены в [pyproject.toml](../pyproject.toml), точные версии
+зафиксированы в [uv.lock](../uv.lock). uv создаёт и обслуживает `.venv/`;
+mise только активирует готовое окружение и запускает задачи.
 Проверку кода без вебхука, `.env` и рабочих данных выполняйте по
 [инструкции изолированных тестов](testing.md).
-Команды выполняются из корня проекта. Если окружения ещё нет:
+Команды одинаковы для Windows, macOS и Linux и выполняются из корня проекта.
+Установите [mise](https://mise.jdx.dev/getting-started.html), затем:
 
 ```text
-python -m venv venv
+mise trust
+mise install
+mise run setup
 ```
 
-| Оболочка | Активация |
-|---|---|
-| macOS/Linux (sh/zsh/bash) | `source venv/bin/activate` |
-| Windows PowerShell | `.\venv\Scripts\Activate.ps1` |
-| Windows cmd | `venv\Scripts\activate.bat` |
+`setup` выполняет `uv sync --locked`: создаёт `.venv` и устанавливает
+зависимости приложения и группу `dev` (Ruff) по lock-файлу.
+Активация вручную и установка через pip не требуются. `UV_PYTHON` передаёт uv
+интерпретатор mise, `UV_PYTHON_DOWNLOADS=never` запрещает uv скачивать отдельный Python.
+Файл `.python-version` не нужен: версию задаёт mise, диапазон Python 3.12 — pyproject.
+Если раньше использовался `venv/`, он не переносится и не удаляется;
+новые команды используют `.venv/`.
 
-После активации:
+Для добавления или удаления зависимости используйте `mise exec -- uv add <package>`
+и `mise exec -- uv remove <package>`. После ручной правки pyproject выполните
+`mise exec -- uv lock`, затем `mise run setup`. Сохраняйте pyproject и lock-файл
+в Git вместе. Секреты и параметры локальной машины в них не добавляйте;
+`mise.local.toml` исключён из Git. Для VS Code выберите интерпретатор
+`.venv/Scripts/python.exe` на Windows или `.venv/bin/python` на macOS/Linux.
+
+Основной запуск:
 
 ```text
-python -m pip install -r requirements.txt
+mise run start
 ```
 
 `requests` нужен для HTTP-запросов; `python-dotenv` — для загрузки секретов из `.env`;
 `loguru` — для [файлового логирования](operations.md#логирование).
-Бот имеет [отдельную зависимость](operations.md#telegram-бот).
+`aiogram` нужен для [Telegram-бота](operations.md#telegram-бот) и устанавливается
+вместе с остальными зависимостями. `start` запускает `bot.py`; саму выгрузку
+запускает кнопка бота. Задачи setup/test/lint бота не запускают.
 
 Создайте входящий вебхук Bitrix24 с правами `crm`, `im`, `imopenlines`,
 `telephony`, `user`; для задач добавьте `task`. Секреты храните в файле `.env`
@@ -52,7 +69,7 @@ ASSEMBLYAI_API_KEY=<assemblyai_key>
 того же процесса из корня проекта:
 
 ```text
-python sync.py
+mise exec -- uv run --locked python sync.py
 ```
 
 Аргументы командной строки не поддерживаются: при их передаче процесс

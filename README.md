@@ -37,8 +37,28 @@ HTTP-проверок без сохранения аудио и запуска �
 [команда и расшифровка отчёта](docs/operations.md#диагностика-скачивания-аудио).
 
 Служебные команды диагностики, восстановления и импорта находятся в `scripts/`.
-Запускайте их из корня проекта: `python scripts/<имя>.py`.
+Запускайте их из корня проекта: `mise exec -- uv run --locked python scripts/<имя>.py`.
 Основные точки входа — `bot.py` и `sync.py` в корне.
+
+## Быстрый старт
+
+Нужен установленный mise. Из корня проекта:
+
+```text
+mise trust
+mise install
+mise run setup
+```
+
+Настройте `.env` по [инструкции](docs/setup.md), затем запустите Telegram-бота:
+
+```text
+mise run start
+```
+
+Изолированные тесты — `mise run test`, линтинг — `mise run lint`, проверка
+форматирования — `mise run format-check`. Python и uv выбирает mise,
+зависимости и `.venv/` обслуживает uv по `pyproject.toml` и `uv.lock`.
 
 ## Документация
 

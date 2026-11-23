@@ -31,17 +31,17 @@ Snapshot пересоздаётся и ограниченным запуском
 из корня проекта, используя существующее окружение и `.env`:
 
 ```text
-venv/bin/python -B scripts/diag_download.py --activity-ids 479980 480444
+mise exec -- uv run --locked python -B scripts/diag_download.py --activity-ids 479980 480444
 ```
 
 Это ID CRM-активностей звонков, а не ID сделок. Для других звонков замените
 числа на `activity_id` из debug.log. Если известны ID файлов Диска:
 
 ```text
-venv/bin/python -B scripts/diag_download.py --file-ids 345040 345668
+mise exec -- uv run --locked python -B scripts/diag_download.py --file-ids 345040 345668
 ```
 
-На Windows используйте `venv\Scripts\python.exe`. Скрипту нужны актуальные
+Команды одинаковы на Windows, macOS и Linux. Скрипту нужны актуальные
 `scripts/diag_download.py`, корневые `transcribe.py` и `logging_setup.py`; новые зависимости
 не требуются. Доступ к Bitrix24 берётся из `B24_WEBHOOK` в окружении или `.env`.
 При импорте config могут создаваться отсутствующие стандартные рабочие каталоги.
@@ -51,7 +51,7 @@ venv/bin/python -B scripts/diag_download.py --file-ids 345040 345668
 диагностических модулей и не заменяет рабочие модули сервера. Запуск:
 
 ```text
-venv/bin/python -B download_diagnostics/run.py --activity-ids 479980 480444
+mise exec -- uv run --locked python -B download_diagnostics/run.py --activity-ids 479980 480444
 ```
 
 Обёртка берёт config/.env и B24Client из родительского проекта; лог также
@@ -149,7 +149,7 @@ store для каждой затронутой сущности, а также s
 над одними данными: PID-файл бота не защищает прямой запуск `sync.py`.
 
 Переписки, персональные данные, `.env`, `credentials/`, `data/`, `raw/`,
-`export/`, `audio/`, `transcripts/`, логи и venv не публикуются. Маска `*.json`
+`export/`, `audio/`, `transcripts/`, логи и окружения `.venv/` / `venv/` не публикуются. Маска `*.json`
 также исключает JSON из Git. Авторизованные URL Диска секретны: прямой режим
 передаёт их AssemblyAI, upload передаёт аудио. Перед отправкой архива проверяйте
 получателя и доступ к данным.
@@ -165,14 +165,14 @@ store для каждой затронутой сущности, а также s
 
 | Команда | Назначение |
 |---|---|
-| `python -B scripts/snapshot_sqlite.py "путь/к/снимку.zip" --db data/sqlite3_snapshots.db` | Добавить конечные карточки в структурированную БД с устранением повторов. Можно передать несколько ZIP; каждый фиксируется отдельной транзакцией. [Схема и запросы](data.md#база-конечных-карточек-без-повторов) |
-| `python scripts/source_sqlite.py --data-dir data --export-dir export --manifest export/snapshot/manifest.json --db data/sqlite3_structured.db` | Разложить исходные поля и нормализованные касания в SQLite. Выполнять на согласованном комплекте одного завершённого запуска при остановленных писателях; [схема и источники](data.md#структурированная-база-из-первоисточников) |
-| `python scripts/import_snapshot.py "путь/к/снимку.zip" --db data/sqlite3.db` | Импортировать готовый ZIP в SQLite без API; добавить снимок, сохранив историю. [Схема и проверки](data.md#sqlite) |
-| `python scripts/refresh_names.py` | Обновить справочники через API, имена/поля и служебную страну в store, перерендерить карточки, snapshot, JSONL и ZIP; без повторной выгрузки активностей/транскрибации |
-| `python scripts/refresh_names.py --offline` | Та же перезапись из кэшей без API; новых имён с портала не будет |
-| `python scripts/recover_registry.py` | Дописать отсутствующие записи registry из полных комплектов store, без API; существующие не исправляет |
-| `python scripts/diag_filter.py` | Диагностика фильтра сделок с запросом API |
-| `python scripts/diag_fields.py` | Диагностика API-полей, включая `crm.deal.userfield.list`, `crm.item.fields` вне основного потока |
+| `mise exec -- uv run --locked python -B scripts/snapshot_sqlite.py "путь/к/снимку.zip" --db data/sqlite3_snapshots.db` | Добавить конечные карточки в структурированную БД с устранением повторов. Можно передать несколько ZIP; каждый фиксируется отдельной транзакцией. [Схема и запросы](data.md#база-конечных-карточек-без-повторов) |
+| `mise exec -- uv run --locked python scripts/source_sqlite.py --data-dir data --export-dir export --manifest export/snapshot/manifest.json --db data/sqlite3_structured.db` | Разложить исходные поля и нормализованные касания в SQLite. Выполнять на согласованном комплекте одного завершённого запуска при остановленных писателях; [схема и источники](data.md#структурированная-база-из-первоисточников) |
+| `mise exec -- uv run --locked python scripts/import_snapshot.py "путь/к/снимку.zip" --db data/sqlite3.db` | Импортировать готовый ZIP в SQLite без API; добавить снимок, сохранив историю. [Схема и проверки](data.md#sqlite) |
+| `mise exec -- uv run --locked python scripts/refresh_names.py` | Обновить справочники через API, имена/поля и служебную страну в store, перерендерить карточки, snapshot, JSONL и ZIP; без повторной выгрузки активностей/транскрибации |
+| `mise exec -- uv run --locked python scripts/refresh_names.py --offline` | Та же перезапись из кэшей без API; новых имён с портала не будет |
+| `mise exec -- uv run --locked python scripts/recover_registry.py` | Дописать отсутствующие записи registry из полных комплектов store, без API; существующие не исправляет |
+| `mise exec -- uv run --locked python scripts/diag_filter.py` | Диагностика фильтра сделок с запросом API |
+| `mise exec -- uv run --locked python scripts/diag_fields.py` | Диагностика API-полей, включая `crm.deal.userfield.list`, `crm.item.fields` вне основного потока |
 
 Refresh не меняет state/registry и не обновляет историю общения. Offline требует
 `data/users_cache.json`; без метаданных поля обновляются упрощённо. Пользователи
@@ -193,15 +193,14 @@ Recovery не восстанавливает повреждённые/отсут
 
 ## Telegram-бот
 
-[bot.py](../bot.py) — основной пульт запуска выгрузки. Для него требуется aiogram 3,
-отсутствующий в requirements: `python -m pip install "aiogram>=3,<4"` в том же
-окружении. Самому процессу `sync.py` он не нужен.
+[bot.py](../bot.py) — основной пульт запуска выгрузки. aiogram 3 входит
+в зависимости проекта и устанавливается через `mise run setup`.
 Задайте `TG_BOT_TOKEN` и `TG_CHAT_ID` (один ID чата или несколько через запятую)
 в файле `.env` рядом с `config.py`
 ([загрузка секретов](setup.md#окружение-и-доступ)), затем:
 
 ```text
-python bot.py
+mise run start
 ```
 
 `/start` в разрешённом чате показывает кнопку. Бот запускает `sync.py` без
@@ -215,7 +214,7 @@ ZIP до 45 МиБ отправляет в чат, для большего по�
 
 На Linux бот может работать через systemd. Локальный `bitrix-export.service`
 исключён из Git и привязан к серверу. Для своего сервера задайте `User`,
-`WorkingDirectory`, `ExecStart` (абсолютные пути Python из venv и bot.py),
+`WorkingDirectory`, `ExecStart` (абсолютные пути Python из `.venv` и bot.py),
 запуск после сети и перезапуск при сбое. Секреты загружает `config.py` из `.env`
 рядом с ним. Это сервис бота,
 не расписание выгрузки. Изменение/запуск сервиса — отдельная операция на сервере.

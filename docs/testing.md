@@ -2,25 +2,38 @@
 
 [Все документы](README.md) · [Настройка](setup.md) · [Архитектура](architecture.md)
 
-После активации существующего окружения с установленными зависимостями:
+После [установки окружения](setup.md#окружение-и-доступ):
 
 ```text
-python -B -m unittest discover -s tests -v
+mise run test
 ```
 
-Команда одинакова для macOS, Linux и Windows; текущая проверка реализации
-выполнена на macOS с Python 3.12. Используются стандартный
-`unittest` и уже необходимые приложению `requests` и `loguru`; дополнительные зависимости
-не нужны. `-B` запрещает создание `__pycache__`. CI пока не настроен.
+Задача выполняет `uv run --locked python -B -m unittest discover -s tests -v`.
+Команда одинакова для macOS, Linux и Windows. Используются стандартный
+`unittest` и уже необходимые приложению `requests` и `loguru`; отдельный тестовый
+фреймворк не нужен. `-B` запрещает создание `__pycache__`. CI пока не настроен.
+Для REVIEW / ANALYSIS / PLANNING тесты требуют явного запроса и готовой `.venv`:
+используйте `mise exec -- uv run --no-sync python -B -m unittest discover -s tests -v`,
+чтобы не менять зависимости или lock-файл. `mise run test` может синхронизировать окружение.
 
 ## Ruff
+
+Ruff входит в группу зависимостей `dev`. Проверки всего проекта:
+
+```text
+mise run lint
+mise run format-check
+```
+
+Задачи не исправляют код. Для проверки отдельных файлов используйте команды
+ниже; в read-only режиме замените `uv run --locked` на `uv run --no-sync`.
 
 Для диагностики скачивания аудио:
 
 ```text
-python -B -m unittest discover -s tests -p test_diag_download.py -v
-ruff check --no-cache scripts/diag_download.py tests/test_diag_download.py
-ruff format --check --no-cache scripts/diag_download.py tests/test_diag_download.py
+mise exec -- uv run --locked python -B -m unittest discover -s tests -p test_diag_download.py -v
+mise exec -- uv run --locked ruff check --no-cache scripts/diag_download.py tests/test_diag_download.py
+mise exec -- uv run --locked ruff format --check --no-cache scripts/diag_download.py tests/test_diag_download.py
 ```
 
 `test_diag_download.py` подставляет config до импорта модулей проекта:
@@ -34,38 +47,55 @@ ruff format --check --no-cache scripts/diag_download.py tests/test_diag_download
 затронутых изменением алгоритма страны:
 
 ```text
-ruff check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
-ruff format --check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
+mise exec -- uv run --locked ruff check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
+mise exec -- uv run --locked ruff format --check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
 ```
 
 Для отдельного импортёра ZIP → SQLite:
 
 ```text
-python -B -m unittest discover -s tests -p test_import_snapshot.py -v
-ruff check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
-ruff format --check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
+mise exec -- uv run --locked python -B -m unittest discover -s tests -p test_import_snapshot.py -v
+mise exec -- uv run --locked ruff check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
+mise exec -- uv run --locked ruff format --check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
 ```
 
 Для структурированной базы из JSON/JSONL:
 
 ```text
-python -B -m unittest discover -s tests -p test_source_sqlite.py -v
-ruff check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
-ruff format --check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
+mise exec -- uv run --locked python -B -m unittest discover -s tests -p test_source_sqlite.py -v
+mise exec -- uv run --locked ruff check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
+mise exec -- uv run --locked ruff format --check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
 ```
 
 Для накопительной базы конечных карточек ZIP:
 
 ```text
-python -B -m unittest discover -s tests -p test_snapshot_sqlite.py -v
-ruff check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
-ruff format --check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
+mise exec -- uv run --locked python -B -m unittest discover -s tests -p test_snapshot_sqlite.py -v
+mise exec -- uv run --locked ruff check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
+mise exec -- uv run --locked ruff format --check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
 ```
 
 Намеренные широкие перехваты ошибок при обработке отдельных сущностей,
 загрузке необязательных справочников и выборе резервного режима отмечены
 точечными `noqa: BLE001` с пояснениями: такие сбои не должны прерывать
 обработку остальных данных.
+
+## Результат проверки при переходе на mise и uv
+
+На Windows с Python 3.12.16 (23 ноября 2026 года) `mise run setup`, повторная
+синхронизация окружения, импорты зависимостей и `mise run --dry-run start`
+проверены успешно. Сам бот и рабочие API не запускались.
+
+Полный набор выполняет 85 тестов, но завершается с 12 провалами и 11 ошибками.
+В неизменённых Python-модулях и тестах выявлены проблемы Windows: синтетическая
+метка времени попадает в имена файлов с запрещёнными двоеточиями; при очистке
+временной SQLite-БД встречается блокировка файла (`WinError 32`). Есть также
+провал проверки диагностического лога. Это требует отдельного разбора исходного
+кода и тестов; переход инструментов их не исправляет.
+
+Ruff сообщает о 26 нарушениях линтинга; проверка форматирования — о 12 файлах,
+требующих форматирования. В рамках перехода Python-код не исправлялся
+и не форматировался. Проверки на macOS/Linux не выполнялись.
 
 ## Изоляция
 

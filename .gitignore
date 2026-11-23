@@ -5,6 +5,11 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
+.ruff_cache/
+.uv-cache/
+.mise-cache/
+mise.local.toml
 .env
 
 # Telegram / Google

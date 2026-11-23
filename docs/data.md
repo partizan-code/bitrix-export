@@ -90,7 +90,7 @@
 (`data/sqlite3_snapshots.db`). Для ранее созданных архивов:
 
 ```text
-python -B scripts/snapshot_sqlite.py "первый.zip" "второй.zip" --db data/sqlite3_snapshots.db
+mise exec -- uv run --locked python -B scripts/snapshot_sqlite.py "первый.zip" "второй.zip" --db data/sqlite3_snapshots.db
 ```
 
 Пути относительны текущему каталогу. Архивы можно добавлять в любом порядке;
@@ -207,7 +207,7 @@ ORDER BY julianday(snapshot_at), snapshot_id;
 проекта на сервере или на согласованной копии данных:
 
 ```text
-python -B scripts/source_sqlite.py --data-dir data --export-dir export --manifest export/snapshot/manifest.json --db data/sqlite3_structured.db
+mise exec -- uv run --locked python -B scripts/source_sqlite.py --data-dir data --export-dir export --manifest export/snapshot/manifest.json --db data/sqlite3_structured.db
 ```
 
 Все пути обязательны; относительные считаются от текущего каталога.
@@ -286,7 +286,7 @@ WHERE snapshot_id = :snapshot_id AND entity = 'deal' AND entity_group = 'active'
 автоматически и не обращается к Диску или Bitrix24:
 
 ```text
-python -B scripts/import_snapshot.py "export/LEXS выгрузка из Битрикс24 на дату 2026-11-23 12-00.zip" --db data/sqlite3.db
+mise exec -- uv run --locked python -B scripts/import_snapshot.py "export/LEXS выгрузка из Битрикс24 на дату 2026-11-23 12-00.zip" --db data/sqlite3.db
 ```
 
 Оба пути обязательны. Относительные пути считаются от текущего рабочего

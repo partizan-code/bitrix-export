@@ -1,0 +1,30 @@
+[tools]
+python = "3.12.16"
+uv = "0.8.18"
+
+[settings]
+python.uv_venv_auto = "source"
+
+[env]
+UV_PYTHON = { value = "{{ tools.python.path }}/{% if os() == 'windows' %}python.exe{% else %}bin/python{% endif %}", tools = true }
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.setup]
+description = "Создать .venv и установить зависимости из uv.lock"
+run = "uv sync --locked"
+
+[tasks.start]
+description = "Запустить Telegram-бота управления выгрузкой"
+run = "uv run --locked python bot.py"
+
+[tasks.test]
+description = "Запустить изолированные тесты без API и рабочих данных"
+run = "uv run --locked python -B -m unittest discover -s tests -v"
+
+[tasks.lint]
+description = "Проверить Python-код с помощью Ruff без исправлений"
+run = "uv run --locked ruff check --no-cache ."
+
+[tasks.format-check]
+description = "Проверить форматирование Python-кода без изменений"
+run = "uv run --locked ruff format --check --no-cache ."
