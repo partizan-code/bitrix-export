@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from html import escape
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError
@@ -123,6 +124,7 @@ def fmt_progress(p):
 
 
 def fmt_done(p, returncode):
+    """Итоговое сообщение в HTML с именем архива в виде кода."""
     ok = returncode == 0
     lines = [
         "✅ Выгрузка завершена."
@@ -135,9 +137,10 @@ def fmt_done(p, returncode):
             lines.append(
                 f"Ошибок: {p['errors']} (объекты повторятся при следующем запуске)"
             )
-        if p.get("zip"):
-            lines.append(f"Архив: {p['zip']}")
-    return "\n".join(lines)
+    text = escape("\n".join(lines))
+    if p and p.get("zip"):
+        text += f"\nАрхив: <code>{escape(str(p['zip']))}</code>"
+    return text
 
 
 # ------------------------------------------------------------------ мониторинг
@@ -166,7 +169,9 @@ async def monitor(msg: Message, proc: subprocess.Popen):
 
     p = read_progress()
     try:
-        await msg.edit_text(fmt_done(p, proc.returncode), reply_markup=KB)
+        await msg.edit_text(
+            fmt_done(p, proc.returncode), parse_mode="HTML", reply_markup=KB
+        )
     except TelegramAPIError as e:
         log.debug("edit done: {}", e)
 
@@ -183,7 +188,8 @@ async def monitor(msg: Message, proc: subprocess.Popen):
     else:
         await msg.answer(
             f"Архив {size / 1024 / 1024:.1f} МБ — больше лимита Telegram.\n"
-            f"Заберите с сервера:\n{zpath}"
+            f"Заберите с сервера:\n<code>{escape(zpath)}</code>",
+            parse_mode="HTML",
         )
 
 
