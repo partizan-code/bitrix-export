@@ -2,8 +2,13 @@
 Диагностика фильтра сделок: сколько сделок портал вернёт
 с текущим фильтром DATE_FROM и без него.
 
-Запуск: python diag_filter.py
+Запуск: python scripts/diag_filter.py
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
 from api_client import B24Client
@@ -29,8 +34,7 @@ def main():
     # контроль: та же дата без времени и таймзоны (некоторые порталы капризны)
     if config.DATE_FROM:
         short = config.DATE_FROM[:10]
-        r_short = c.call("crm.deal.list",
-                         {**base, "filter": {">=DATE_CREATE": short}})
+        r_short = c.call("crm.deal.list", {**base, "filter": {">=DATE_CREATE": short}})
         print(f"Контроль ('{short}'): total =", r_short.get("total"))
 
 

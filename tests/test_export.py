@@ -3,15 +3,18 @@
 import copy
 import hashlib
 import importlib
+import io
 import json
 import logging
 import os
+import runpy
 import socket
+import sqlite3
 import sys
 import tempfile
 import types
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -19,6 +22,7 @@ from zipfile import ZipFile
 
 import requests
 from loguru import logger
+from script_utils import load_script
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -42,8 +46,6 @@ PROJECT_MODULES = (
     "sync",
     "transcribe",
     "users",
-    "refresh_names",
-    "recover_registry",
 )
 
 
@@ -156,6 +158,8 @@ def make_config(root):
         "INCREMENTAL_OVERLAP_HOURS": 24,
         "REEXPORT_CLOSED_ON_CHANGE": False,
         "MAKE_SNAPSHOT_ZIP": True,
+        "SNAPSHOT_SQLITE_ENABLED": False,
+        "SNAPSHOT_SQLITE_PATH": str(root / "data" / "sqlite3_snapshots.db"),
         "FILE_BRAND": "TEST",
         "DEAL_COUNTRY_BY_CATEGORY": {
             0: "RB",
@@ -458,6 +462,42 @@ class ExportTests(unittest.TestCase):
             self.sync.main()
         return self.read_json("export/snapshot/manifest.json")
 
+    def test_service_scripts_have_independent_entrypoints(self):
+        client = Mock()
+        client.call.return_value = {"total": 0}
+        client.result.return_value = {}
+        client.call_list.return_value = []
+        for name in (
+            "diag_fields",
+            "diag_filter",
+            "recover_registry",
+            "refresh_names",
+            "import_snapshot",
+            "source_sqlite",
+            "snapshot_sqlite",
+        ):
+            path = ROOT / "scripts" / f"{name}.py"
+            arguments = [str(path)]
+            if name in {
+                "refresh_names",
+                "import_snapshot",
+                "source_sqlite",
+                "snapshot_sqlite",
+            }:
+                arguments.append("--help")
+            with (
+                self.subTest(script=name),
+                patch.object(sys, "argv", arguments),
+                patch("api_client.B24Client", return_value=client),
+                redirect_stdout(io.StringIO()),
+                self.assertRaises(SystemExit) as result,
+            ):
+                runpy.run_path(str(path), run_name="__main__")
+            self.assertIn(result.exception.code, (None, 0))
+        self.assertEqual(
+            self.read_json("data/diag_fields.json")["deal_userfield_list"]["count"], 0
+        )
+
     def read_json(self, relative):
         return json.loads((self.root / relative).read_text(encoding="utf-8"))
 
@@ -560,6 +600,38 @@ class ExportTests(unittest.TestCase):
             self.digest(),
             "21aca37a6dcb946883d19c50fd64e5a890935606fe22f56af0c6d91c623e5e03",
         )
+
+    def test_snapshot_sqlite_imports_final_zip(self):
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = True
+        manifest = self.run_sync()
+        with sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH) as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM snapshot_cards").fetchone(),
+                (6,),
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_key_check").fetchall(), []
+            )
+            with ZipFile(next((self.root / "export").glob("*.zip"))) as archive:
+                for name in archive.namelist():
+                    entity, entity_id, _ = self.sync.snapshot_sqlite.file_identity(name)
+                    if entity:
+                        restored = self.sync.snapshot_sqlite.restore_card(
+                            connection, manifest["export_id"], entity, entity_id
+                        )
+                        self.assertEqual(restored.encode("utf-8"), archive.read(name))
+        self.assertEqual(self.read_json("data/progress.json")["sqlite_status"], "added")
+
+    def test_snapshot_sqlite_failure_preserves_zip_and_state(self):
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = True
+        with sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH) as connection:
+            connection.execute("CREATE TABLE keep (value TEXT)")
+        before = Path(self.cfg.SNAPSHOT_SQLITE_PATH).read_bytes()
+        self.run_sync()
+        self.assertTrue(list((self.root / "export").glob("*.zip")))
+        self.assertTrue((self.root / "data" / "state.json").exists())
+        self.assertEqual(self.read_json("data/progress.json")["sqlite_status"], "error")
+        self.assertEqual(Path(self.cfg.SNAPSHOT_SQLITE_PATH).read_bytes(), before)
 
     def test_incremental_snapshot(self):
         self.run_sync()
@@ -755,9 +827,9 @@ class ExportTests(unittest.TestCase):
                 stats,
                 entity=entity,
             )
-        refresh = importlib.import_module("refresh_names")
+        refresh = load_script("refresh_names")
         self.client.trace.clear()
-        with patch.object(sys, "argv", ["refresh_names.py", "--offline"]):
+        with patch.object(sys, "argv", ["scripts/refresh_names.py", "--offline"]):
             refresh.main()
         self.assertFalse(self.client.trace)
         for entity in ("deal", "lead"):
@@ -1098,9 +1170,9 @@ class ExportTests(unittest.TestCase):
             p: (self.root / p).read_bytes()
             for p in ("data/state.json", "data/registry.json")
         }
-        refresh = importlib.import_module("refresh_names")
+        refresh = load_script("refresh_names")
         self.client.trace.clear()
-        with patch.object(sys, "argv", ["refresh_names.py", "--offline"]):
+        with patch.object(sys, "argv", ["scripts/refresh_names.py", "--offline"]):
             refresh.main()
         self.assertFalse(self.client.trace)
         for path, content in before.items():
@@ -1110,7 +1182,7 @@ class ExportTests(unittest.TestCase):
         reg = self.read_json("data/registry.json")
         del reg["lead:2"]
         self.write_json("data/registry.json", reg)
-        recovery = importlib.import_module("recover_registry")
+        recovery = load_script("recover_registry")
         with patch("builtins.print"):
             recovery.main()
         recovered = self.read_json("data/registry.json")

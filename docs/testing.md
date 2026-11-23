@@ -15,12 +15,51 @@ python -B -m unittest discover -s tests -v
 
 ## Ruff
 
+Для диагностики скачивания аудио:
+
+```text
+python -B -m unittest discover -s tests -p test_diag_download.py -v
+ruff check --no-cache scripts/diag_download.py tests/test_diag_download.py
+ruff format --check --no-cache scripts/diag_download.py tests/test_diag_download.py
+```
+
+`test_diag_download.py` подставляет config до импорта модулей проекта:
+реальные config/.env не читаются. HTTP и curl заменены моками, сеть/DNS и
+неподменённые subprocess запрещены. Логи пишутся в TemporaryDirectory.
+Проверяются частичные данные при тайм-ауте, предел 64 КиБ, Range/редиректы,
+пустой/HTML-ответ, закрытие ресурсов, сохранность общих логов, атомарное
+завершение диагностического лога и исключение секретов из его содержимого.
+
 При установленном Ruff проверка линтинга и форматирования модулей,
 затронутых изменением алгоритма страны:
 
 ```text
-ruff check --no-cache config.py export_llm.py sync.py refresh_names.py tests/test_export.py
-ruff format --check --no-cache config.py export_llm.py sync.py refresh_names.py tests/test_export.py
+ruff check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
+ruff format --check --no-cache config.py export_llm.py sync.py scripts/refresh_names.py tests/test_export.py
+```
+
+Для отдельного импортёра ZIP → SQLite:
+
+```text
+python -B -m unittest discover -s tests -p test_import_snapshot.py -v
+ruff check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
+ruff format --check --no-cache import_snapshot.py scripts/import_snapshot.py tests/test_import_snapshot.py
+```
+
+Для структурированной базы из JSON/JSONL:
+
+```text
+python -B -m unittest discover -s tests -p test_source_sqlite.py -v
+ruff check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
+ruff format --check --no-cache source_sqlite.py scripts/source_sqlite.py tests/test_source_sqlite.py
+```
+
+Для накопительной базы конечных карточек ZIP:
+
+```text
+python -B -m unittest discover -s tests -p test_snapshot_sqlite.py -v
+ruff check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
+ruff format --check --no-cache parse_snapshot.py snapshot_sqlite.py scripts/snapshot_sqlite.py tests/test_snapshot_sqlite.py
 ```
 
 Намеренные широкие перехваты ошибок при обработке отдельных сущностей,
@@ -29,6 +68,14 @@ ruff format --check --no-cache config.py export_llm.py sync.py refresh_names.py 
 обработку остальных данных.
 
 ## Изоляция
+
+`script_utils.load_script` загружает служебные команды из `scripts/` по пути.
+Проверки CLI SQLite используют эти точки входа, а проверки схем и транзакций —
+корневые библиотечные модули. Команды обновления имён и восстановления реестра
+загружаются после подстановки искусственного config.
+Отдельный сценарий запускает семь служебных точек входа через `__main__`:
+диагностика API использует поддельный клиент, восстановление — временный store,
+остальные команды проверяются через `--help`.
 
 [tests/test_export.py](../tests/test_export.py) подставляет искусственный
 модуль `config` **до** импорта модулей проекта. Настоящий `config.py` и `.env`
@@ -48,6 +95,33 @@ ruff format --check --no-cache config.py export_llm.py sync.py refresh_names.py 
 AssemblyAI проверяется через моки.
 Проверки следует запускать отдельным процессом указанной командой: audit hook
 Python действует до завершения процесса.
+
+[tests/test_import_snapshot.py](../tests/test_import_snapshot.py) использует
+только стандартную библиотеку и искусственные ZIP/SQLite в собственном
+`TemporaryDirectory` каждого теста; сетевые подключения запрещены моком.
+Импортёр не зависит от `config.py`, `.env` или модулей API. Проверяются
+точность байтов UTF-8/CRLF, различение сделок и лидов, история и частичные
+снимки, повтор после перепаковки, конфликт ID, откат при ошибке записи,
+некорректные архивы, сохранность чужой БД и коды завершения CLI.
+
+[tests/test_source_sqlite.py](../tests/test_source_sqlite.py) строит искусственный
+store/registry/manifest и метаданные по структуре рабочих JSON/JSONL.
+Запись разрешена только в собственные временные файлы; сеть запрещена моком,
+`config.py` и `.env` не используются. Проверяются отдельные колонки сырых
+и расшифрованных полей, вложенные массивы, actor/ответственный, точное время,
+история, частичный статус, новые поля, повторы/конфликты, согласованность
+registry, изменение источников при чтении и транзакционный откат колонок/строк.
+Эти проверки не означают сверку локального store с серверными архивами.
+
+[tests/test_snapshot_sqlite.py](../tests/test_snapshot_sqlite.py) проверяет
+отдельные колонки полей, время/порядок/типы касаний, различие автора и
+ответственного, переиспользование версий, добавление/исправление/исчезновение
+событий, одинаковые сообщения в одну минуту, новые и повторяющиеся подписи,
+многострочные значения/имена, CRLF, точное восстановление карточек,
+повторы/конфликты, чужие БД и транзакционный откат колонок и данных.
+Только стандартная библиотека и собственные временные ZIP/SQLite, сеть
+запрещена моком. Интеграция после сборки ZIP и сохранность ZIP/state при ошибке
+SQLite дополнительно проверяются синтетическим прогоном в `test_export.py`.
 
 ## Что проверяется
 

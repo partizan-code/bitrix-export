@@ -9,7 +9,9 @@
 """
 
 import os
+import re
 import time
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -48,6 +50,138 @@ def download_recording(url, dest_path):
             f.write(chunk)
     os.replace(tmp, dest_path)
     return dest_path
+
+
+def probe_recording(
+    url: str,
+    *,
+    byte_range: tuple[int, int] | None = None,
+    close_connection: bool = False,
+    byte_limit: int = 65536,
+    read_timeout: float = 10,
+    total_timeout: float = 30,
+) -> dict:
+    """Проверить передачу аудио в память; вернуть только безопасные метаданные.
+
+    Время проверяется между чтениями; блокирующее чтение ограничено read_timeout.
+    Ссылки, произвольные заголовки, тексты ошибок и байты аудио не возвращаются.
+    """
+    if not 1 <= byte_limit <= 65536 or read_timeout <= 0 or total_timeout <= 0:
+        raise ValueError("Некорректный лимит диагностического чтения")
+    if byte_range is not None and (byte_range[0] < 0 or byte_range[1] < byte_range[0]):
+        raise ValueError("Некорректный диапазон байтов")
+    started = time.monotonic()
+    result = {"bytes_read": 0, "redirects": 0, "outcome": "error"}
+    headers = {}
+    if byte_range is not None:
+        headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+        byte_limit = min(byte_limit, byte_range[1] - byte_range[0] + 1)
+    if close_connection:
+        headers.update({"Connection": "close", "Accept-Encoding": "identity"})
+    first = b""
+    try:
+        with requests.Session() as session:
+            for hop in range(4):
+                parsed = urlsplit(url)
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username:
+                    result["outcome"] = "unsafe_url"
+                    break
+                if time.monotonic() - started >= total_timeout:
+                    result["outcome"] = "time_budget"
+                    break
+                with session.get(
+                    url,
+                    headers=headers,
+                    timeout=(8, read_timeout),
+                    stream=True,
+                    allow_redirects=False,
+                ) as response:
+                    result.update(
+                        http_status=response.status_code,
+                        headers_seconds=round(time.monotonic() - started, 3),
+                    )
+                    if response.is_redirect:
+                        if hop == 3:
+                            result["outcome"] = "redirect_limit"
+                            break
+                        url = urljoin(url, response.headers.get("Location", ""))
+                        result["redirects"] += 1
+                        continue
+                    content_type = response.headers.get("Content-Type", "")
+                    media = re.match(r"[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+", content_type)
+                    length = response.headers.get("Content-Length", "")
+                    expected = (
+                        int(length) if re.fullmatch(r"[0-9]{1,18}", length) else None
+                    )
+                    range_match = re.fullmatch(
+                        r"bytes ([0-9]+)-([0-9]+)/([0-9]+)",
+                        response.headers.get("Content-Range", ""),
+                    )
+                    received_range = (
+                        tuple(map(int, range_match.groups())) if range_match else None
+                    )
+                    result.update(
+                        content_type=media.group().lower() if media else "other",
+                        content_length=expected,
+                        content_range=received_range,
+                        range_honored=(
+                            response.status_code == 206
+                            and received_range is not None
+                            and received_range[:2] == byte_range
+                        )
+                        if byte_range is not None
+                        else None,
+                    )
+                    if response.status_code not in (200, 206):
+                        result["outcome"] = "http_error"
+                        break
+                    reader = getattr(response.raw, "read1", response.raw.read)
+                    while result["bytes_read"] < byte_limit:
+                        if expected is not None and result["bytes_read"] >= expected:
+                            break
+                        if time.monotonic() - started >= total_timeout:
+                            result["outcome"] = "time_budget"
+                            break
+                        chunk = reader(min(4096, byte_limit - result["bytes_read"]))
+                        if not chunk:
+                            break
+                        if result["bytes_read"] == 0:
+                            result["first_data_seconds"] = round(
+                                time.monotonic() - started, 3
+                            )
+                        first = (first + chunk)[:32]
+                        result["bytes_read"] += len(chunk)
+                    else:
+                        result["outcome"] = "sample_complete"
+                    if result["outcome"] == "error":
+                        result["outcome"] = "eof"
+                    if expected is not None:
+                        if result["bytes_read"] == expected:
+                            result["outcome"] = "file_complete"
+                        elif result["outcome"] == "eof":
+                            result["outcome"] = "incomplete"
+                    break
+    except Exception as error:  # noqa: BLE001 — продолжить остальные пробы
+        result["error_type"] = type(error).__name__
+        result["outcome"] = "error"
+    result.update(
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        looks_html=first.lstrip().lower().startswith((b"<!doctype html", b"<html")),
+        audio_signature=(
+            first[:3] == b"ID3"
+            or first[:4] in (b"RIFF", b"OggS", b"fLaC")
+            or (len(first) > 1 and first[0] == 255 and first[1] & 224 == 224)
+        ),
+    )
+    if not result["bytes_read"] and result["outcome"] in {"file_complete", "eof"}:
+        result["outcome"] = "empty"
+    if result["looks_html"] and result["outcome"] in {
+        "file_complete",
+        "sample_complete",
+        "eof",
+    }:
+        result["outcome"] = "unexpected_content"
+    return result
 
 
 def download_call_recording(client, deal_id, call):

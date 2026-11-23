@@ -15,8 +15,8 @@ FULL_SNAPSHOT — без переобработки сделок и лидов: 
   - «Текущая стадия/статус», если стадии/статусы переименовали.
 
 Использование:
-  python refresh_names.py            # справочники — свежие с портала
-  python refresh_names.py --offline  # из кэшей data/*.json (без API)
+  python scripts/refresh_names.py            # справочники — свежие с портала
+  python scripts/refresh_names.py --offline  # из кэшей data/*.json (без API)
 
 Перед запуском убедитесь, что users.load_users возвращает ВСЕХ
 пользователей, включая уволенных (без filter ACTIVE=true), — иначе
@@ -28,6 +28,10 @@ import json
 import os
 import re
 import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
 import export_llm

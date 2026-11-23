@@ -93,6 +93,7 @@ REEXPORT_CLOSED_ON_CHANGE = False
 SCHEMA_VERSION = 2  # версия схемы в именах файлов и manifest
 SNAPSHOT_TZ = "Europe/Minsk"  # единое время для manifest, карточек и ZIP
 MAKE_SNAPSHOT_ZIP = True  # архивировать export/snapshot после выгрузки
+SNAPSHOT_SQLITE_ENABLED = True  # сохранять конечные карточки ZIP в накопительную БД
 ZIP_NAME_TEMPLATE = "LEXS выгрузка из Битрикс24 на дату {stamp}"  # без расширения
 # {stamp} — дата снимка в SNAPSHOT_TZ, формат «ГГГГ-ММ-ДД ЧЧ-ММ».
 FILE_BRAND = "LEXS"  # префикс имён: LEXS_DEAL_... / LEXS_SALES_...
@@ -142,6 +143,7 @@ RAW_DIR = os.path.join(BASE_DIR, "raw")  # сырой JSON из API
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")  # записи звонков
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")  # тексты транскрипций
 EXPORT_DIR = os.path.join(BASE_DIR, "export")  # итог: jsonl + md для ИИ
+SNAPSHOT_SQLITE_PATH = os.path.join(DATA_DIR, "sqlite3_snapshots.db")
 
 for _d in (DATA_DIR, RAW_DIR, AUDIO_DIR, TRANSCRIPTS_DIR, EXPORT_DIR):
     os.makedirs(_d, exist_ok=True)

@@ -6,10 +6,14 @@ Registry штатно пишется в конце выгрузки; если п
 Скрипт просканирует store и допишет недостающие записи — тогда следующий
 запуск переиспользует готовые сделки вместо повторной обработки.
 
-Запуск: python recover_registry.py
+Запуск: python scripts/recover_registry.py
 """
 
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
 import registry
@@ -31,10 +35,11 @@ def main():
                 continue
             try:
                 stats = store.load_stats(did, entity=entity)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 — пропустить нечитаемую статистику store
                 continue
             group = stats.get("group") or (
-                "completed" if stats.get("closed") else "active")
+                "completed" if stats.get("closed") else "active"
+            )
             reg[k] = {
                 "group": group,
                 "entity": entity,
@@ -46,8 +51,10 @@ def main():
             }
             added += 1
     registry.save(reg)
-    print(f"registry.json: было {before}, добавлено {added} из store "
-          f"(уже были: {skipped}), итого {len(reg)}")
+    print(
+        f"registry.json: было {before}, добавлено {added} из store "
+        f"(уже были: {skipped}), итого {len(reg)}"
+    )
 
 
 if __name__ == "__main__":

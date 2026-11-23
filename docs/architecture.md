@@ -24,15 +24,28 @@ ZIP (если включён и результат непустой), прогр
 | [fetch_tasks.py](../fetch_tasks.py) | `tasks.task.list`, `UF_CRM_TASK=D_<id>` / `L_<id>` |
 | [users.py](../users.py) | `user.get`, `crm.contact.get`, `crm.status.list`, `crm.category.list`; кэши, `ContactBook`, `LazyUserMap` |
 | [transcribe.py](../transcribe.py) | `disk.file.get`, аудио, AssemblyAI, кэш текстов |
+| [scripts/diag_download.py](../scripts/diag_download.py) | Ограниченная диагностика чтения аудио через `transcribe.probe_recording`, HTTP Range и curl; отдельный безопасный лог |
+| [scripts/diag_fields.py](../scripts/diag_fields.py), [scripts/diag_filter.py](../scripts/diag_filter.py) | Ручная диагностика метаданных и выборки через API |
+| [scripts/refresh_names.py](../scripts/refresh_names.py), [scripts/recover_registry.py](../scripts/recover_registry.py) | Ручное обновление имён и восстановление реестра |
 | [normalize.py](../normalize.py) | Схема касания, события стадий |
 | [store.py](../store.py), [registry.py](../registry.py) | Артефакты и переиспользование |
 | [export_llm.py](../export_llm.py) | JSONL, Markdown, manifest, ZIP, имена/время снимка |
+| [source_sqlite.py](../source_sqlite.py) | Структурированный SQLite по исходным JSON/JSONL, функция `write_snapshot`; CLI — [scripts/source_sqlite.py](../scripts/source_sqlite.py), без API/config |
+| [snapshot_sqlite.py](../snapshot_sqlite.py) | Накопительная БД конечных карточек ZIP; версии без повторов, связи со слепками, проверка восстановления; вызывается из sync, CLI — [scripts/snapshot_sqlite.py](../scripts/snapshot_sqlite.py) |
+| [parse_snapshot.py](../parse_snapshot.py) | Разбор полей и событий Markdown schema-v2, сохранение оформления для точного восстановления |
+| [import_snapshot.py](../import_snapshot.py) | Библиотека импорта готового ZIP в SQLite, без API/config; CLI — [scripts/import_snapshot.py](../scripts/import_snapshot.py), [схема](data.md#sqlite) |
 | [bot.py](../bot.py) | Запуск `sync.py` без аргументов, прогресс и выдача ZIP в Telegram |
-| [logging_setup.py](../logging_setup.py) | Два файла Loguru, маскирование секретов, перехват warning/error библиотек, аварийное завершение процесса |
+| [logging_setup.py](../logging_setup.py) | Два общих файла Loguru либо один через `configure_logging(diagnostic_path=...)`, маскирование секретов, перехват warning/error библиотек, аварийное завершение процесса |
 
 Клиент повторяет сетевые сбои, HTTP 429, `QUERY_LIMIT_EXCEEDED` и
 `OPERATION_TIME_LIMIT` с экспоненциальной задержкой; прочие ошибки API и
 исчерпание попыток дают `BitrixError`. Параметры сети — в config.
+
+Основные `bot.py` и `sync.py` запускаются из корня. Служебные команды в
+`scripts/` добавляют корень в путь импорта при прямом запуске; `scripts`
+не требует `__init__.py` или установки пакета. Библиотечные SQLite-модули
+в корне самостоятельно не запускаются. Относительные пути аргументов команд
+остаются относительно текущего рабочего каталога.
 
 Разбор метаданных сделок и лидов общий:
 `fetch_deals.load_fields_meta(client, entity)`. Значение `entity` — `deal` или

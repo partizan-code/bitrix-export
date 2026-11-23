@@ -59,8 +59,8 @@ class _InterceptHandler(logging.Handler):
         log.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-def configure_logging() -> None:
-    """Настроить два файла в режиме дописывания; повторный вызов не дублирует записи."""
+def configure_logging(*, diagnostic_path: str | None = None) -> None:
+    """Настроить общие логи либо один отдельный диагностический файл."""
     global _secrets
     values = [
         config.WEBHOOK_URL,
@@ -80,8 +80,11 @@ def configure_logging() -> None:
         "diagnose": False,
         "colorize": False,
     }
-    log.add(config.DEBUG_LOG_PATH, level="DEBUG", **options)
-    log.add(config.ERROR_LOG_PATH, level="ERROR", **options)
+    if diagnostic_path is not None:
+        log.add(diagnostic_path, level="DEBUG", **options)
+    else:
+        log.add(config.DEBUG_LOG_PATH, level="DEBUG", **options)
+        log.add(config.ERROR_LOG_PATH, level="ERROR", **options)
     logging.basicConfig(
         handlers=[_InterceptHandler(level=logging.WARNING)],
         level=logging.WARNING,

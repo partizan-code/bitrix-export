@@ -27,4 +27,8 @@ transcripts/
 # Logs
 *.log
 
+# SQLite и служебные файлы транзакций
+*.db
+*.db-*
+
 /bitrix-export.service

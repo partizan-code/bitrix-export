@@ -26,6 +26,7 @@ import shutil
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import config
 import export_llm
@@ -36,6 +37,7 @@ import fetch_openlines
 import fetch_tasks
 import normalize
 import registry
+import snapshot_sqlite
 import store
 import transcribe
 from api_client import B24Client, BitrixError
@@ -845,6 +847,30 @@ def main():
         zpath = export_llm.make_snapshot_zip(ctx)
         log.info("Архив снимка: {}", zpath)
 
+    sqlite_result = {}
+    if zpath and getattr(config, "SNAPSHOT_SQLITE_ENABLED", False):
+        _progress(entity=None, stage="sqlite", deals=total_deals, leads=total_leads)
+        try:
+            imported = snapshot_sqlite.import_snapshot(
+                Path(zpath), Path(config.SNAPSHOT_SQLITE_PATH)
+            )
+        except Exception as error:  # noqa: BLE001 — ZIP сохранён, состояние выгрузки нужно завершить
+            sqlite_result = {
+                "sqlite_status": "error",
+                "sqlite_error": type(error).__name__,
+            }
+            log.error("Не удалось сохранить снимок в SQLite: {}", error)
+        else:
+            sqlite_result = {
+                "sqlite_status": "added" if imported["added"] else "existing",
+                "sqlite": os.path.basename(config.SNAPSHOT_SQLITE_PATH),
+            }
+            log.info(
+                "SQLite: {} карточек; {}",
+                imported["cards"],
+                config.SNAPSHOT_SQLITE_PATH,
+            )
+
     _progress(
         entity=None,
         stage="done",
@@ -853,6 +879,7 @@ def main():
         errors=len(errors),
         skipped=len(skipped),
         zip=os.path.basename(zpath) if zpath else None,
+        **sqlite_result,
     )
 
     # state.json — якорь следующего инкрементального снимка,

@@ -88,6 +88,7 @@ store, новый snapshot и возможный ZIP. Это не изолиро
 | `EXPORT_TYPE`, `INCREMENTAL_OVERLAP_HOURS` | `auto` / `full` / `incremental`; перекрытие 24 ч |
 | `REEXPORT_CLOSED_ON_CHANGE` | `False`: закрытые переиспользуются даже после изменений |
 | `SCHEMA_VERSION`, `SNAPSHOT_TZ`, `MAKE_SNAPSHOT_ZIP` | Схема 2, `Europe/Minsk`, ZIP включён |
+| `SNAPSHOT_SQLITE_ENABLED`, `SNAPSHOT_SQLITE_PATH` | После сборки ZIP сохранять конечные карточки в накопительную БД; включено, путь `data/sqlite3_snapshots.db` |
 | `FILE_BRAND`, `DEAL_COUNTRY_BY_CATEGORY`, `ZIP_NAME_TEMPLATE` | Бренд, соответствие ID воронки и страны сделки, имя архива; [правила страны](data.md#файлы-результата) |
 | `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,55 с, 5 попыток, тайм-аут 60 с |
 | `DATA_DIR`, `RAW_DIR`, `AUDIO_DIR`, `TRANSCRIPTS_DIR`, `EXPORT_DIR` | Пути через `os.path` относительно каталога проекта |
