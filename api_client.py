@@ -121,15 +121,3 @@ class B24Client:
     def ping(self):
         """Проверка доступа: возвращает профиль пользователя вебхука."""
         return self.result("profile")
-
-    @property
-    def auth_key(self):
-        """Ключ входящего вебхука из URL (.../rest/<user>/<key>/).
-
-        Legacy: в коде не используется. DOWNLOAD_URL, который disk.file.get
-        отдаёт вебхуку, уже содержит авторизацию в пути, поэтому
-        transcribe.resolve_file_url скачивает его как есть, без ?auth=.
-        Оставлено как запасной вариант для порталов, где URL придёт
-        без авторизации (тогда понадобится ?auth=<ключ>).
-        """
-        return self.base.rstrip("/").rsplit("/", 1)[-1]

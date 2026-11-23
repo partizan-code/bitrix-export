@@ -152,7 +152,7 @@ class ContactBook:
                     ] if p
                 )
                 self.cache[cid] = full or f"contact_{cid}"
-            except Exception as e:  # контакт могли удалить
+            except Exception:  # контакт могли удалить
                 self.cache[cid] = f"contact_{cid}"
             _save_json(self.path, self.cache)
         return self.cache[cid]
@@ -182,10 +182,6 @@ def load_stages(client):
             print(f"  ! стадии {entity}: {e}")
     _save_json(os.path.join(config.DATA_DIR, "stages.json"), stages)
     return stages
-
-
-def stage_name(stages_map, stage_id):
-    return stages_map.get(stage_id, stage_id)
 
 
 # ------------------------------------------------------------------ sources / statuses

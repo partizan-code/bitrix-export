@@ -181,7 +181,7 @@ def process_entity(client, deal, users_map, stages_map, contacts, args,
             sender = fetch_openlines.classify_sender(
                 msg["sender_id"], users_map, users_info, deal["_contact_name"])
             touchpoints.append(normalize.tp_from_ol_message(
-                deal, chat, msg, sender, users_map, history, stages_map))
+                deal, chat, msg, sender, history, stages_map))
 
     # --- комментарии таймлайна
     if config.INCLUDE_COMMENTS:
@@ -431,7 +431,7 @@ def run_entity(entity, client, args, ctx, books, prev_state, export_type,
             os.path.join(config.EXPORT_DIR,
                          f"touchpoints_{entity}_{group}.jsonl"))
         export_llm.write_deals_index(
-            data["index"], users_map,
+            data["index"],
             os.path.join(config.EXPORT_DIR,
                          f"index_{entity}_{group}.jsonl"))
         total += len(data["index"])

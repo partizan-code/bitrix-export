@@ -29,7 +29,7 @@ def get_disk_file(client, file_id):
     return client.result("disk.file.get", {"id": int(file_id)}) or {}
 
 
-def resolve_file_url(client, file_info):
+def resolve_file_url(file_info):
     """
     Ссылка на скачивание файла Диска (запись разговора из FILES активности).
 
@@ -66,7 +66,7 @@ def download_call_recording(client, deal_id, call):
 
     try:
         info = get_disk_file(client, file_ids[0])
-        url = resolve_file_url(client, info)
+        url = resolve_file_url(info)
         if not url:
             log.warning("Сделка %s: у файла %s нет DOWNLOAD_URL", deal_id, file_ids[0])
             return None
@@ -232,7 +232,7 @@ def _transcribe_assemblyai_direct(client, call):
     (disk.file.get -> DOWNLOAD_URL): ничего не скачиваем на локальный диск.
     """
     info = get_disk_file(client, call["file_ids"][0])
-    url = resolve_file_url(client, info)
+    url = resolve_file_url(info)
     if not url:
         raise RuntimeError(f"у файла {call['file_ids'][0]} нет DOWNLOAD_URL")
     return _transcribe_assemblyai_url(url)

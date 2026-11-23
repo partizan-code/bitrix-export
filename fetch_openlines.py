@@ -16,7 +16,6 @@
 import logging
 import re
 
-import config
 from api_client import BitrixError
 
 log = logging.getLogger("b24")

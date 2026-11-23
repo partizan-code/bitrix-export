@@ -13,19 +13,14 @@
 (fetch_activities / fetch_openlines / fetch_tasks) с owner_type=1.
 """
 
-import json
 import logging
-import os
 
 import config
-from fetch_deals import TECH_TITLES
+from fetch_deals import load_fields_meta
 
 log = logging.getLogger("b24")
 
 LEAD_SELECT = ["*", "UF_*"]
-
-# OWNER_TYPE_ID сущностей (crm.activity.*, stagehistory)
-OWNER_TYPE = {"lead": 1, "deal": 2}
 
 
 def period_filter_active():
@@ -162,30 +157,4 @@ def load_lead_fields_meta(client):
     Формат тот же, что у fetch_deals.load_deal_fields_meta:
     {FIELD_CODE: {"title", "type", "statusType"?, "list"?}}
     """
-    meta = {}
-    fields = client.result("crm.lead.fields") or {}
-    for name, f in fields.items():
-        title = (f.get("listLabel") or f.get("formLabel") or f.get("filterLabel")
-                 or f.get("title") or name)
-        if title == name and name in TECH_TITLES:
-            title = TECH_TITLES[name]
-        m = {"title": title, "type": f.get("type") or ""}
-        if f.get("statusType"):
-            m["statusType"] = f["statusType"]
-        items = f.get("items")
-        if items:
-            if isinstance(items, dict):
-                items = items.values()
-            lst = {}
-            for i in items:
-                iid = i.get("ID", i.get("id"))
-                if iid is not None:
-                    lst[str(iid)] = i.get("VALUE", i.get("value"))
-            if lst:
-                m["list"] = lst
-        meta[name] = m
-
-    path = os.path.join(config.DATA_DIR, "lead_fields_meta.json")
-    with open(path, "w", encoding="utf-8") as fp:
-        json.dump(meta, fp, ensure_ascii=False, indent=1)
-    return meta
+    return load_fields_meta(client, entity="lead")

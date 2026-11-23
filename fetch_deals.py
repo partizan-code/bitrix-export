@@ -179,8 +179,13 @@ def load_deal_fields_meta(client):
 
     {FIELD_CODE: {"title", "type", "statusType"?, "list"?}}
     """
+    return load_fields_meta(client, entity="deal")
+
+
+def load_fields_meta(client, entity):
+    """Загрузить метаданные сделки/лида и атомарно обновить отдельный кэш."""
     meta = {}
-    fields = client.result("crm.deal.fields") or {}
+    fields = client.result(f"crm.{entity}.fields") or {}
     for name, f in fields.items():
         title = (f.get("listLabel") or f.get("formLabel") or f.get("filterLabel")
                  or f.get("title") or name)
@@ -202,9 +207,15 @@ def load_deal_fields_meta(client):
                 m["list"] = lst
         meta[name] = m
 
-    path = os.path.join(config.DATA_DIR, "deal_fields_meta.json")
-    with open(path, "w", encoding="utf-8") as fp:
-        json.dump(meta, fp, ensure_ascii=False, indent=1)
+    path = os.path.join(config.DATA_DIR, f"{entity}_fields_meta.json")
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fp:
+            json.dump(meta, fp, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return meta
 
 

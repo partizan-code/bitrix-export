@@ -18,7 +18,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import config
-from users import user_name  # noqa: F401  (re-export для sync)
+from users import user_name
 
 
 def _tz():
@@ -135,7 +135,7 @@ def write_touchpoints_jsonl(all_touchpoints, path=None):
     return path
 
 
-def write_deals_index(deals_meta, users_map, path=None):
+def write_deals_index(deals_meta, path=None):
     path = path or os.path.join(config.EXPORT_DIR, "deals_index.jsonl")
     with open(path, "w", encoding="utf-8") as f:
         for d in deals_meta:
@@ -338,7 +338,6 @@ def write_deal_markdown_copy(md_text, deal, group, ctx, pipeline_map,
 # ================================================================== manifest + zip
 ALL_GROUPS = ("active", "completed", "technical")
 ENTITIES = ("deals", "leads")          # блоки manifest (сделки / лиды)
-_ID_KEY = {"deals": "deal_ids", "leads": "lead_ids"}
 
 
 def _entity_block(groups_index, errors):

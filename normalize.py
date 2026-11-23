@@ -87,7 +87,7 @@ def tp_from_call(deal, call, users_map, history, stages_map, transcript_info):
 
 
 # ------------------------------------------------------------------ чаты ОЛ
-def tp_from_ol_message(deal, chat, msg, sender, users_map, history, stages_map):
+def tp_from_ol_message(deal, chat, msg, sender, history, stages_map):
     tp = _base(deal, msg["time"], chat["channel"], "message")
     tp["touchpoint_id"] = f"ol_{chat['chat_id']}_{msg['id']}"
     tp["actor"] = sender

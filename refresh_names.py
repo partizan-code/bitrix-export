@@ -36,7 +36,7 @@ import fetch_deals
 import fetch_leads
 import store
 from users import (load_users, load_stages, load_lead_statuses, load_sources,
-                   load_status_book, load_categories, user_name, LazyUserMap)
+                   load_categories, user_name, LazyUserMap)
 
 log = logging.getLogger("b24")
 
@@ -273,7 +273,7 @@ def main():
                 tps, os.path.join(config.EXPORT_DIR,
                                   f"touchpoints_{ent}_{group}.jsonl"))
             export_llm.write_deals_index(
-                idx, users_map,
+                idx,
                 os.path.join(config.EXPORT_DIR,
                              f"index_{ent}_{group}.jsonl"))
 
