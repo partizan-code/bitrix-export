@@ -127,7 +127,7 @@ ASSEMBLYAI_POLL_INTERVAL = 3  # интервал опроса статуса, с
 ASSEMBLYAI_TIMEOUT = 900  # ожидание результата, с
 # True: передавать AssemblyAI авторизованную ссылку Диска; при ошибке — файл.
 # False: скачивать запись в audio/ и загружать файлом.
-ASSEMBLYAI_DIRECT_URL = True
+ASSEMBLYAI_DIRECT_URL = False
 
 # Сеть
 REQUEST_PAUSE = 0.55  # пауза между запросами к Bitrix24, с
