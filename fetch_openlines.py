@@ -47,14 +47,19 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
     [{'chat_id': 1763, 'channel': 'viber', 'connector_title': '...'}, ...]
     """
     try:
-        rows = client.result("imopenlines.crm.chat.get", {
-            "CRM_ENTITY_TYPE": entity_type,
-            "CRM_ENTITY": int(deal_id),
-            "ACTIVE_ONLY": "N",
-        }) or []
+        rows = (
+            client.result(
+                "imopenlines.crm.chat.get",
+                {
+                    "CRM_ENTITY_TYPE": entity_type,
+                    "CRM_ENTITY": int(deal_id),
+                    "ACTIVE_ONLY": "N",
+                },
+            )
+            or []
+        )
     except BitrixError as e:
-        log.warning("{} {}: imopenlines.crm.chat.get: {}",
-                    entity_type, deal_id, e)
+        log.warning("{} {}: imopenlines.crm.chat.get: {}", entity_type, deal_id, e)
         return []
     chats = []
     skipped = 0
@@ -66,14 +71,20 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
             skipped += 1
             continue
         conn = (r.get("CONNECTOR_ID") or "").lower()
-        chats.append({
-            "chat_id": int(chat_id),
-            "channel": CONNECTOR_CHANNEL.get(conn, conn or "unknown"),
-            "connector_title": r.get("CONNECTOR_TITLE") or conn,
-        })
+        chats.append(
+            {
+                "chat_id": int(chat_id),
+                "channel": CONNECTOR_CHANNEL.get(conn, conn or "unknown"),
+                "connector_title": r.get("CONNECTOR_TITLE") or conn,
+            }
+        )
     if skipped:
-        log.info("{} {}: привязок чатов без CHAT_ID: {} (пропущено)",
-                 entity_type, deal_id, skipped)
+        log.info(
+            "{} {}: привязок чатов без CHAT_ID: {} (пропущено)",
+            entity_type,
+            deal_id,
+            skipped,
+        )
     return chats
 
 
@@ -85,10 +96,15 @@ def get_chat_history(client, chat_id):
       users_info — {'<id>': {'name':..., 'is_bot': bool}} из ответа API
     """
     try:
-        res = client.result("imopenlines.session.history.get", {"CHAT_ID": int(chat_id)})
+        res = client.result(
+            "imopenlines.session.history.get", {"CHAT_ID": int(chat_id)}
+        )
     except BitrixError as e:
-        log.warning("Чат {}: session.history.get: {}; fallback на im.dialog.messages.get",
-                    chat_id, e)
+        log.warning(
+            "Чат {}: session.history.get: {}; fallback на im.dialog.messages.get",
+            chat_id,
+            e,
+        )
         return _history_via_im(client, chat_id)
 
     if not res:
@@ -104,13 +120,15 @@ def get_chat_history(client, chat_id):
 
     messages = []
     for m in raw_msgs.values():
-        messages.append({
-            "id": m.get("id"),
-            "sender_id": str(m.get("senderid", "0")),
-            "time": m.get("date"),
-            "text": clean_text(m.get("text") or m.get("textlegacy") or ""),
-            "params": m.get("params") or {},
-        })
+        messages.append(
+            {
+                "id": m.get("id"),
+                "sender_id": str(m.get("senderid", "0")),
+                "time": m.get("date"),
+                "text": clean_text(m.get("text") or m.get("textlegacy") or ""),
+                "params": m.get("params") or {},
+            }
+        )
     messages.sort(key=lambda x: (x["time"] or "", str(x["id"])))
     return messages, users_info
 
@@ -131,13 +149,15 @@ def _history_via_im(client, chat_id, max_pages=20):
             if not batch:
                 break
             for m in batch:
-                messages.append({
-                    "id": m.get("id"),
-                    "sender_id": str(m.get("author_id", "0")),
-                    "time": m.get("date"),
-                    "text": clean_text(m.get("text") or ""),
-                    "params": m.get("params") or {},
-                })
+                messages.append(
+                    {
+                        "id": m.get("id"),
+                        "sender_id": str(m.get("author_id", "0")),
+                        "time": m.get("date"),
+                        "text": clean_text(m.get("text") or ""),
+                        "params": m.get("params") or {},
+                    }
+                )
             for u in res.get("users") or []:
                 users_info[str(u.get("id"))] = {
                     "name": u.get("name"),
@@ -152,8 +172,13 @@ def _history_via_im(client, chat_id, max_pages=20):
     return messages, users_info
 
 
-SYSTEM_HINTS = ("создан новый лид", "создана новая сделка", "оценка работы",
-                "a new lead has been created", "рейтинг диалога")
+SYSTEM_HINTS = (
+    "создан новый лид",
+    "создана новая сделка",
+    "оценка работы",
+    "a new lead has been created",
+    "рейтинг диалога",
+)
 
 
 def classify_sender(sender_id, users_map, users_info, client_name):
@@ -170,9 +195,16 @@ def classify_sender(sender_id, users_map, users_info, client_name):
         info = users_info.get(sid)
         if info:
             if info.get("is_bot"):
-                return {"type": "bot", "user_id": int(sid), "name": info.get("name") or "bot"}
-            return {"type": "manager", "user_id": int(sid),
-                    "name": info.get("name") or f"user_{sid}"}
+                return {
+                    "type": "bot",
+                    "user_id": int(sid),
+                    "name": info.get("name") or "bot",
+                }
+            return {
+                "type": "manager",
+                "user_id": int(sid),
+                "name": info.get("name") or f"user_{sid}",
+            }
     return {"type": "client", "name": client_name or "Клиент"}
 
 

@@ -25,8 +25,11 @@ _KINDS = ("deals", "tps", "index", "deal")
 
 def _dir(kind, entity="deal"):
     base = os.path.join(config.DATA_DIR, "store")
-    d = os.path.join(base, kind) if entity == "deal" \
+    d = (
+        os.path.join(base, kind)
+        if entity == "deal"
         else os.path.join(base, entity, kind)
+    )
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -48,9 +51,17 @@ def save_artifacts(deal, md_text, touchpoints, stats, entity="deal"):
     did = int(deal["ID"])
     with open(_path("deals", did, entity), "w", encoding="utf-8") as f:
         f.write(md_text)
-    with open(_path("tps", did, entity), "w", encoding="utf-8") as f:
-        for tp in touchpoints:
-            f.write(json.dumps(tp, ensure_ascii=False) + "\n")
+    path = _path("tps", did, entity)
+    temporary = path + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            f.writelines(
+                json.dumps(tp, ensure_ascii=False) + "\n" for tp in touchpoints
+            )
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
     with open(_path("index", did, entity), "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=1)
     with open(_path("deal", did, entity), "w", encoding="utf-8") as f:

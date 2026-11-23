@@ -12,9 +12,10 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, closing, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -447,7 +448,15 @@ class ExportTests(unittest.TestCase):
                 self.sync.export_llm, "_tz", return_value=timezone(timedelta(hours=3))
             )
         )
-        self.stack.enter_context(patch("time.strftime", return_value=STAMP))
+        self.stack.enter_context(
+            patch.object(
+                self.sync,
+                "time",
+                types.SimpleNamespace(
+                    strftime=Mock(return_value=STAMP), time=time.time
+                ),
+            )
+        )
         self.stack.enter_context(patch("time.sleep"))
 
     def close_sandbox(self):
@@ -595,16 +604,16 @@ class ExportTests(unittest.TestCase):
             )
             self.assertIn("manifest.json", archive.namelist())
             self.assertFalse(any(n.endswith(".jsonl") for n in archive.namelist()))
-        # Эталон обновлён: источник «Сайт» даёт UNKNOWN у лидов, поля CRM прежние.
+        # Имена и export_id используют штатные форматы времени вместо общего STAMP.
         self.assertEqual(
             self.digest(),
-            "21aca37a6dcb946883d19c50fd64e5a890935606fe22f56af0c6d91c623e5e03",
+            "4ed230845d89609f63483231a3adb69567d106cf670e89192b9e7cb48818ad07",
         )
 
     def test_snapshot_sqlite_imports_final_zip(self):
         self.cfg.SNAPSHOT_SQLITE_ENABLED = True
         manifest = self.run_sync()
-        with sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH) as connection:
+        with closing(sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH)) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM snapshot_cards").fetchone(),
                 (6,),
@@ -624,7 +633,10 @@ class ExportTests(unittest.TestCase):
 
     def test_snapshot_sqlite_failure_preserves_zip_and_state(self):
         self.cfg.SNAPSHOT_SQLITE_ENABLED = True
-        with sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH) as connection:
+        with (
+            closing(sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH)) as connection,
+            connection,
+        ):
             connection.execute("CREATE TABLE keep (value TEXT)")
         before = Path(self.cfg.SNAPSHOT_SQLITE_PATH).read_bytes()
         self.run_sync()
@@ -652,7 +664,7 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(all(p["filter"]["OWNER_ID"] == 1 for p in calls))
         self.assertEqual(
             self.digest(),
-            "bf16dcc51a06a3a1b662aede6212cf173a967b46e7eb1a38348fb76dc2edb8b0",
+            "fc9b37f5f3f16e141b50ae663734e59318850858dfb509bef6a5c2f662f94af7",
         )
 
     def test_country_uses_category_or_source_and_preserves_crm_fields(self):
@@ -1273,6 +1285,76 @@ class ExportTests(unittest.TestCase):
                 "Текст",
             )
             direct.assert_called_once_with("https://example.invalid/audio")
+
+    def test_download_closes_response_and_reuses_complete_audio(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.iter_content.return_value = iter([b"ID3", b"synthetic"])
+        destination = str(self.root / "audio" / "record.mp3")
+        with patch.object(
+            self.sync.transcribe.requests, "get", return_value=response
+        ) as get:
+            self.assertEqual(
+                self.sync.transcribe.download_recording(
+                    "https://example.invalid/audio", destination
+                ),
+                destination,
+            )
+            self.sync.transcribe.download_recording(
+                "https://example.invalid/audio", destination
+            )
+        self.assertEqual(Path(destination).read_bytes(), b"ID3synthetic")
+        self.assertFalse(Path(destination + ".part").exists())
+        get.assert_called_once_with(
+            "https://example.invalid/audio", timeout=1, stream=True
+        )
+        response.__exit__.assert_called_once()
+
+    def test_failed_download_removes_partial_audio_and_closes_response(self):
+        def chunks():
+            yield b"ID3"
+            raise requests.ReadTimeout("Синтетический сбой")
+
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.iter_content.return_value = chunks()
+        destination = str(self.root / "audio" / "record.mp3")
+        with (
+            patch.object(self.sync.transcribe.requests, "get", return_value=response),
+            self.assertRaises(requests.ReadTimeout),
+        ):
+            self.sync.transcribe.download_recording(
+                "https://example.invalid/audio", destination
+            )
+        self.assertFalse(Path(destination).exists())
+        self.assertFalse(Path(destination + ".part").exists())
+        response.__exit__.assert_called_once()
+
+    def test_failed_touchpoint_write_preserves_previous_jsonl(self):
+        store = self.sync.store
+        store.save_artifacts({"ID": "1"}, "Карточка", [{"text": "Ранее"}], {})
+        path = Path(store._path("tps", 1))
+        before = path.read_bytes()
+        for failure in ("serialize", "replace"):
+            with self.subTest(failure=failure):
+                context = (
+                    patch.object(store.os, "replace", side_effect=OSError("Недоступно"))
+                    if failure == "replace"
+                    else ExitStack()
+                )
+                with context, self.assertRaises((TypeError, OSError)):
+                    store.save_artifacts(
+                        {"ID": "1"},
+                        "Карточка",
+                        [{"text": "Новый"}]
+                        if failure == "replace"
+                        else [{"bad": object()}],
+                        {},
+                    )
+                self.assertEqual(path.read_bytes(), before)
+                self.assertFalse(Path(str(path) + ".tmp").exists())
 
     def test_api_pagination_and_retries(self):
         api = importlib.import_module("api_client")

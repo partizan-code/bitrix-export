@@ -7,7 +7,7 @@ import sqlite3
 from collections import Counter
 from collections.abc import Callable, Iterable
 from contextlib import ExitStack, closing, contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import groupby
 from pathlib import Path
 
@@ -313,7 +313,7 @@ def write_snapshot(
                     manifest["status"],
                     int(manifest["is_complete"]),
                     manifest["schema_version"],
-                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    datetime.now(UTC).isoformat(timespec="seconds"),
                     expected,
                     dumps(manifest),
                 ),

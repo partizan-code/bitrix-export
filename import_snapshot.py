@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile, ZipInfo
 
@@ -168,7 +168,7 @@ def import_snapshot(archive_path: Path, database_path: Path) -> dict:
                     (
                         snapshot_id,
                         manifest["snapshot_at"],
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                         archive_path.name,
                         manifest["schema_version"],
                         manifest["status"],

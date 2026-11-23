@@ -5,7 +5,7 @@ import json
 import sqlite3
 from collections import defaultdict
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -409,7 +409,7 @@ def import_snapshot(archive_path: Path, database_path: Path) -> dict:
                         archive_path.name,
                         fingerprint,
                         archive.read("manifest.json").decode("utf-8"),
-                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        datetime.now(UTC).isoformat(timespec="seconds"),
                     ),
                 )
                 columns = {

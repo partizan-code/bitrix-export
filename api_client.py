@@ -47,36 +47,61 @@ class B24Client:
                 )
             except requests.RequestException as e:
                 last_err = e
-                wait = 2 ** attempt
-                log.warning("{}: сеть ({}: {}), попытка {}/{}, повтор через {} с",
-                            method, type(e).__name__, e, attempt + 1, config.MAX_RETRIES, wait)
+                wait = 2**attempt
+                log.warning(
+                    "{}: сеть ({}: {}), попытка {}/{}, повтор через {} с",
+                    method,
+                    type(e).__name__,
+                    e,
+                    attempt + 1,
+                    config.MAX_RETRIES,
+                    wait,
+                )
                 time.sleep(wait)
                 continue
 
             if resp.status_code == 429:
-                wait = 2 ** attempt
-                log.warning("{}: HTTP 429, попытка {}/{}, пауза {} с",
-                            method, attempt + 1, config.MAX_RETRIES, wait)
+                wait = 2**attempt
+                log.warning(
+                    "{}: HTTP 429, попытка {}/{}, пауза {} с",
+                    method,
+                    attempt + 1,
+                    config.MAX_RETRIES,
+                    wait,
+                )
                 time.sleep(wait)
                 continue
 
             try:
                 data = resp.json()
             except ValueError:
-                last_err = BitrixError(method, f"HTTP {resp.status_code}", "Ответ не JSON")
-                log.warning("{}: HTTP {}, ответ не JSON, попытка {}/{}, пауза {} с",
-                            method, resp.status_code, attempt + 1, config.MAX_RETRIES,
-                            2 ** attempt)
-                time.sleep(2 ** attempt)
+                last_err = BitrixError(
+                    method, f"HTTP {resp.status_code}", "Ответ не JSON"
+                )
+                log.warning(
+                    "{}: HTTP {}, ответ не JSON, попытка {}/{}, пауза {} с",
+                    method,
+                    resp.status_code,
+                    attempt + 1,
+                    config.MAX_RETRIES,
+                    2**attempt,
+                )
+                time.sleep(2**attempt)
                 continue
 
             if "error" in data:
                 err = data.get("error", "")
                 desc = data.get("error_description", "")
                 if err in ("QUERY_LIMIT_EXCEEDED", "OPERATION_TIME_LIMIT"):
-                    wait = 2 ** attempt
-                    log.warning("{}: {}, попытка {}/{}, пауза {} с",
-                                method, err, attempt + 1, config.MAX_RETRIES, wait)
+                    wait = 2**attempt
+                    log.warning(
+                        "{}: {}, попытка {}/{}, пауза {} с",
+                        method,
+                        err,
+                        attempt + 1,
+                        config.MAX_RETRIES,
+                        wait,
+                    )
                     time.sleep(wait)
                     last_err = BitrixError(method, err, desc)
                     continue

@@ -13,7 +13,6 @@
 (fetch_activities / fetch_openlines / fetch_tasks) с owner_type=1.
 """
 
-
 import config
 from fetch_deals import load_fields_meta
 from logging_setup import log
@@ -47,11 +46,14 @@ def get_leads(client):
         return [lead] if lead else []
 
     log.info("Фильтр crm.lead.list: {}", flt or "(без фильтра)")
-    leads = client.call_list("crm.lead.list", {
-        "order": {"ID": "ASC"},
-        "filter": flt,
-        "select": LEAD_SELECT,
-    })
+    leads = client.call_list(
+        "crm.lead.list",
+        {
+            "order": {"ID": "ASC"},
+            "filter": flt,
+            "select": LEAD_SELECT,
+        },
+    )
     if config.LEADS_LIMIT:
         leads = leads[: config.LEADS_LIMIT]
     return leads
@@ -64,11 +66,14 @@ def get_leads_by_ids(client, ids):
         return []
     flt = {"@ID": ids}
     log.info("Фильтр crm.lead.list: {}", flt)
-    return client.call_list("crm.lead.list", {
-        "order": {"ID": "ASC"},
-        "filter": flt,
-        "select": LEAD_SELECT,
-    })
+    return client.call_list(
+        "crm.lead.list",
+        {
+            "order": {"ID": "ASC"},
+            "filter": flt,
+            "select": LEAD_SELECT,
+        },
+    )
 
 
 def get_leads_incremental(client, changed_since):
@@ -90,19 +95,22 @@ def get_leads_incremental(client, changed_since):
         flt = dict(base)
         flt.update(extra)
         log.info("Фильтр crm.lead.list: {}", flt)
-        rows = client.call_list("crm.lead.list", {
-            "order": {"ID": "ASC"},
-            "filter": flt,
-            "select": LEAD_SELECT,
-        })
+        rows = client.call_list(
+            "crm.lead.list",
+            {
+                "order": {"ID": "ASC"},
+                "filter": flt,
+                "select": LEAD_SELECT,
+            },
+        )
         for d in rows:
             lid = int(d["ID"])
             if lid not in seen:
                 seen.add(lid)
                 leads.append(d)
 
-    _pull({"STATUS_SEMANTIC_ID": "P"})          # все активные — всегда целиком
-    _pull({">=DATE_MODIFY": changed_since})     # всё изменённое с прошлого снимка
+    _pull({"STATUS_SEMANTIC_ID": "P"})  # все активные — всегда целиком
+    _pull({">=DATE_MODIFY": changed_since})  # всё изменённое с прошлого снимка
 
     leads.sort(key=lambda d: int(d["ID"]))
     if config.LEADS_LIMIT:
@@ -127,8 +135,10 @@ def is_technical(lead, lead_statuses):
     if status_id in (config.LEAD_TECHNICAL_STATUS_IDS or []):
         return True
     status_name = (lead_statuses.get(status_id) or status_id).lower()
-    return any(kw.lower() in status_name
-               for kw in (config.LEAD_TECHNICAL_STATUS_KEYWORDS or []))
+    return any(
+        kw.lower() in status_name
+        for kw in (config.LEAD_TECHNICAL_STATUS_KEYWORDS or [])
+    )
 
 
 def lead_group(lead, lead_statuses):
@@ -140,12 +150,18 @@ def lead_group(lead, lead_statuses):
 
 def display_name(lead):
     """Имя клиента по лиду: ФИО, иначе компания, иначе заголовок."""
-    parts = [(lead.get("LAST_NAME") or "").strip(),
-             (lead.get("NAME") or "").strip(),
-             (lead.get("SECOND_NAME") or "").strip()]
+    parts = [
+        (lead.get("LAST_NAME") or "").strip(),
+        (lead.get("NAME") or "").strip(),
+        (lead.get("SECOND_NAME") or "").strip(),
+    ]
     full = " ".join(p for p in parts if p)
-    return full or (lead.get("COMPANY_TITLE") or "").strip() \
-        or (lead.get("TITLE") or "").strip() or None
+    return (
+        full
+        or (lead.get("COMPANY_TITLE") or "").strip()
+        or (lead.get("TITLE") or "").strip()
+        or None
+    )
 
 
 # ------------------------------------------------------------------ метаданные полей

@@ -149,7 +149,7 @@ def parse_event(block: str) -> tuple[dict, str]:
     stamp, head = match["timestamp"], match["head"]
     if stamp:
         # В карточке нет часового пояса события; проверяем только дату и минуту.
-        datetime.strptime(stamp, "%Y-%m-%d %H:%M")  # noqa: DTZ007
+        datetime.strptime(stamp, "%Y-%m-%d %H:%M")
     rest = core[match.end() :]
     # Имена участников и названия задач в конечной карточке бывают многострочными.
     # Тело рендера имеет отступ, а маркер транскрипции — отдельную строку.

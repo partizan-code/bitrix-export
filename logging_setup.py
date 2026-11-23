@@ -34,9 +34,14 @@ def _sanitize_record(record: dict) -> None:
     message = record["message"]
     exception = record["exception"]
     if exception is not None:
-        message += "\n" + "".join(
-            traceback.format_exception(exception.type, exception.value, exception.traceback)
-        ).rstrip()
+        message += (
+            "\n"
+            + "".join(
+                traceback.format_exception(
+                    exception.type, exception.value, exception.traceback
+                )
+            ).rstrip()
+        )
         record["exception"] = None
     record["message"] = _redact(message)
 
@@ -74,7 +79,7 @@ def configure_logging(*, diagnostic_path: str | None = None) -> None:
     log.remove()
     options = {
         "format": "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-                  "pid={process.id} | {name}:{function}:{line} | {message}",
+        "pid={process.id} | {name}:{function}:{line} | {message}",
         "encoding": "utf-8",
         "backtrace": False,
         "diagnose": False,

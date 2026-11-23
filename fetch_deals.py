@@ -52,11 +52,14 @@ def get_deals(client):
         return [deal] if deal else []
 
     log.info("Фильтр crm.deal.list: {}", flt or "(без фильтра)")
-    deals = client.call_list("crm.deal.list", {
-        "order": {"ID": "ASC"},
-        "filter": flt,
-        "select": DEAL_SELECT,
-    })
+    deals = client.call_list(
+        "crm.deal.list",
+        {
+            "order": {"ID": "ASC"},
+            "filter": flt,
+            "select": DEAL_SELECT,
+        },
+    )
     if config.DEALS_LIMIT:
         deals = deals[: config.DEALS_LIMIT]
     return deals
@@ -69,11 +72,14 @@ def get_deals_by_ids(client, ids):
         return []
     flt = {"@ID": ids}
     log.info("Фильтр crm.deal.list: {}", flt)
-    return client.call_list("crm.deal.list", {
-        "order": {"ID": "ASC"},
-        "filter": flt,
-        "select": DEAL_SELECT,
-    })
+    return client.call_list(
+        "crm.deal.list",
+        {
+            "order": {"ID": "ASC"},
+            "filter": flt,
+            "select": DEAL_SELECT,
+        },
+    )
 
 
 def get_deals_incremental(client, changed_since):
@@ -98,11 +104,14 @@ def get_deals_incremental(client, changed_since):
         flt = dict(base)
         flt.update(extra)
         log.info("Фильтр crm.deal.list: {}", flt)
-        rows = client.call_list("crm.deal.list", {
-            "order": {"ID": "ASC"},
-            "filter": flt,
-            "select": DEAL_SELECT,
-        })
+        rows = client.call_list(
+            "crm.deal.list",
+            {
+                "order": {"ID": "ASC"},
+                "filter": flt,
+                "select": DEAL_SELECT,
+            },
+        )
         for d in rows:
             did = int(d["ID"])
             if did not in seen:
@@ -110,8 +119,8 @@ def get_deals_incremental(client, changed_since):
                 deals.append(d)
 
     if config.PROCESS_ACTIVE:
-        _pull({"CLOSED": "N"})                      # все активные — всегда целиком
-    _pull({">=DATE_MODIFY": changed_since})         # всё изменённое с прошлого снимка
+        _pull({"CLOSED": "N"})  # все активные — всегда целиком
+    _pull({">=DATE_MODIFY": changed_since})  # всё изменённое с прошлого снимка
 
     deals.sort(key=lambda d: int(d["ID"]))
     if config.DEALS_LIMIT:
@@ -133,13 +142,15 @@ def is_technical(deal, stages_map):
     """
     stage_id = str(deal.get("STAGE_ID") or "")
     cat = str(deal.get("CATEGORY_ID") or "0")
-    explicit = (config.TECHNICAL_STAGE_IDS.get(cat)
-                or config.TECHNICAL_STAGE_IDS.get("*") or [])
+    explicit = (
+        config.TECHNICAL_STAGE_IDS.get(cat) or config.TECHNICAL_STAGE_IDS.get("*") or []
+    )
     if stage_id in explicit:
         return True
     stage_name = (stages_map.get(stage_id) or stage_id).lower()
-    return any(kw.lower() in stage_name
-               for kw in (config.TECHNICAL_STAGE_KEYWORDS or []))
+    return any(
+        kw.lower() in stage_name for kw in (config.TECHNICAL_STAGE_KEYWORDS or [])
+    )
 
 
 def deal_group(deal, stages_map):
@@ -185,8 +196,13 @@ def load_fields_meta(client, entity):
     meta = {}
     fields = client.result(f"crm.{entity}.fields") or {}
     for name, f in fields.items():
-        title = (f.get("listLabel") or f.get("formLabel") or f.get("filterLabel")
-                 or f.get("title") or name)
+        title = (
+            f.get("listLabel")
+            or f.get("formLabel")
+            or f.get("filterLabel")
+            or f.get("title")
+            or name
+        )
         if title == name and name in TECH_TITLES:
             title = TECH_TITLES[name]
         m = {"title": title, "type": f.get("type") or ""}
@@ -232,8 +248,9 @@ _BOOLISH = ("true", "false")
 SEMANTIC_LABELS = {"P": "В работе", "S": "Успешно завершена", "F": "Провал"}
 
 
-def resolve_deal_fields(deal, fields_meta, users_map=None,
-                        status_maps=None, category_map=None):
+def resolve_deal_fields(
+    deal, fields_meta, users_map=None, status_maps=None, category_map=None
+):
     """
     Все непустые поля сделки -> {CODE: {"title": ..., "value": ...}}.
     Резолв: enum-списки -> названия, crm_status (Тип, Стадия, Источник) -> названия,
@@ -263,15 +280,23 @@ def resolve_deal_fields(deal, fields_meta, users_map=None,
             display = SEMANTIC_LABELS.get(str(value), value)
         elif ftype in ("employee", "user") and users_map:
             ids = value if isinstance(value, list) else [value]
-            names = [user_name(users_map, int(v)) for v in ids
-                     if str(v).lstrip("-").isdigit()]
+            names = [
+                user_name(users_map, int(v))
+                for v in ids
+                if str(v).lstrip("-").isdigit()
+            ]
             names = [n for n in names if n]
             if names:
                 display = ", ".join(names)
-        elif (ftype == "boolean" or isinstance(value, bool)
-              or str(value).strip().lower() in _BOOLISH):
-            display = _bool_label(value)
-        elif ftype == "char" and str(value).strip() in ("Y", "N"):
+        elif (
+            (
+                ftype == "boolean"
+                or isinstance(value, bool)
+                or str(value).strip().lower() in _BOOLISH
+            )
+            or ftype == "char"
+            and str(value).strip() in ("Y", "N")
+        ):
             display = _bool_label(value)
         out[name] = {"title": m.get("title") or name, "value": display}
     return out
@@ -283,15 +308,19 @@ def get_stage_history(client, deal_id, entity_type_id=2):
     [{'stage_id': 'NEW', 'time': '2026-07-10T09:15:00+03:00'}, ...] по возрастанию.
     entity_type_id: 2 — сделка, 1 — лид.
     """
-    rows = client.call_list("crm.stagehistory.list", {
-        "entityTypeId": entity_type_id,
-        "order": {"ID": "ASC"},
-        "filter": {"OWNER_ID": int(deal_id)},
-        "select": ["ID", "STAGE_ID", "CREATED_TIME"],
-    })
+    rows = client.call_list(
+        "crm.stagehistory.list",
+        {
+            "entityTypeId": entity_type_id,
+            "order": {"ID": "ASC"},
+            "filter": {"OWNER_ID": int(deal_id)},
+            "select": ["ID", "STAGE_ID", "CREATED_TIME"],
+        },
+    )
     return [
         {"stage_id": r.get("STAGE_ID"), "time": r.get("CREATED_TIME")}
-        for r in rows if r.get("STAGE_ID")
+        for r in rows
+        if r.get("STAGE_ID")
     ]
 
 

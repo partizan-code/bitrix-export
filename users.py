@@ -50,7 +50,7 @@ def load_users(client):
     """Полная карта {user_id: {'name': ..., 'position': ...}}."""
     try:
         raw = client.call_list("user.get")
-    except Exception:
+    except Exception:  # noqa: BLE001 — повтор загрузки необязательного справочника
         # на части порталов user.get не принимает filter — берём всех
         raw = client.call_list("user.get")
     users = {}
@@ -104,21 +104,29 @@ class LazyUserMap(dict):
         rec = None
         try:
             res = self.client.result("user.get", {"ID": uid})
-            u = res if isinstance(res, dict) and res.get("ID") else \
-                (res[0] if isinstance(res, list) and res else None)
+            u = (
+                res
+                if isinstance(res, dict) and res.get("ID")
+                else (res[0] if isinstance(res, list) and res else None)
+            )
             if u:
-                rec = {"name": format_user_name(u),
-                       "position": u.get("WORK_POSITION") or ""}
-        except Exception:
+                rec = {
+                    "name": format_user_name(u),
+                    "position": u.get("WORK_POSITION") or "",
+                }
+        except Exception:  # noqa: BLE001 — неизвестный пользователь не прерывает выгрузку
             rec = None
         if rec:
             self[uid] = self.extra[uid] = rec
         else:
             self._missing.add(uid)
-        _save_json(self.path, {
-            "resolved": {str(k): v for k, v in self.extra.items()},
-            "missing": sorted(self._missing),
-        })
+        _save_json(
+            self.path,
+            {
+                "resolved": {str(k): v for k, v in self.extra.items()},
+                "missing": sorted(self._missing),
+            },
+        )
         return rec
 
 
@@ -146,13 +154,15 @@ class ContactBook:
             try:
                 c = self.client.result("crm.contact.get", {"id": int(cid)}) or {}
                 full = " ".join(
-                    p for p in [
+                    p
+                    for p in [
                         (c.get("LAST_NAME") or "").strip(),
                         (c.get("NAME") or "").strip(),
-                    ] if p
+                    ]
+                    if p
                 )
                 self.cache[cid] = full or f"contact_{cid}"
-            except Exception:  # контакт могли удалить
+            except Exception:  # noqa: BLE001 — удалённый контакт не прерывает выгрузку
                 self.cache[cid] = f"contact_{cid}"
             _save_json(self.path, self.cache)
         return self.cache[cid]
@@ -175,9 +185,12 @@ def load_stages(client):
     for cid in set(cat_ids):
         entity = "DEAL_STAGE" if cid == 0 else f"DEAL_STAGE_{cid}"
         try:
-            for s in client.result("crm.status.list", {"filter": {"ENTITY_ID": entity}}) or []:
+            for s in (
+                client.result("crm.status.list", {"filter": {"ENTITY_ID": entity}})
+                or []
+            ):
                 stages[s["STATUS_ID"]] = s.get("NAME", s["STATUS_ID"])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — недоступная воронка не прерывает остальные
             # воронка могла быть удалена — не критично
             print(f"  ! стадии {entity}: {e}")
     _save_json(os.path.join(config.DATA_DIR, "stages.json"), stages)
@@ -191,7 +204,9 @@ def load_status_book(client, entity_id):
     ENTITY_ID: SOURCE, DEAL_TYPE и т.п. (crm.status.list).
     """
     statuses = {}
-    for s in client.result("crm.status.list", {"filter": {"ENTITY_ID": entity_id}}) or []:
+    for s in (
+        client.result("crm.status.list", {"filter": {"ENTITY_ID": entity_id}}) or []
+    ):
         statuses[s["STATUS_ID"]] = s.get("NAME", s["STATUS_ID"])
     return statuses
 

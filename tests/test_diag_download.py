@@ -244,6 +244,9 @@ class DownloadDiagnosticTests(unittest.TestCase):
             patch.object(
                 self.module, "curl_probe", return_value={"outcome": "not_installed"}
             ),
+            patch.object(self.module.platform, "system", return_value="Windows"),
+            patch.object(self.module.platform, "release", return_value="test"),
+            patch.object(self.module.platform, "machine", return_value="test"),
             redirect_stdout(io.StringIO()),
         ):
             code = self.module.main(

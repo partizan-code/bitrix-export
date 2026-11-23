@@ -42,13 +42,16 @@ def download_recording(url, dest_path):
     """Скачивание с потоковой записью. Повторно не качает."""
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
         return dest_path
-    r = requests.get(url, timeout=config.REQUEST_TIMEOUT, stream=True)
-    r.raise_for_status()
     tmp = dest_path + ".part"
-    with open(tmp, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1 << 16):
-            f.write(chunk)
-    os.replace(tmp, dest_path)
+    try:
+        with requests.get(url, timeout=config.REQUEST_TIMEOUT, stream=True) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                f.writelines(r.iter_content(chunk_size=1 << 16))
+        os.replace(tmp, dest_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return dest_path
 
 
@@ -198,13 +201,17 @@ def download_call_recording(client, deal_id, call):
         info = get_disk_file(client, file_ids[0])
         url = resolve_file_url(info)
         if not url:
-            log.error("Сущность {} звонок {}: у файла {} нет DOWNLOAD_URL",
-                      deal_id, act_id, file_ids[0])
+            log.error(
+                "Сущность {} звонок {}: у файла {} нет DOWNLOAD_URL",
+                deal_id,
+                act_id,
+                file_ids[0],
+            )
             return None
         ext = os.path.splitext(info.get("NAME") or "")[1] or ".mp3"
         dest = os.path.join(config.AUDIO_DIR, f"deal{deal_id}_call{act_id}{ext}")
         return download_recording(url, dest)
-    except Exception:
+    except Exception:  # noqa: BLE001 — ошибка записи не останавливает остальные звонки
         log.exception("Сущность {} звонок {}: запись не скачана", deal_id, act_id)
         return None
 
@@ -222,6 +229,7 @@ def _aa_headers():
 
 def _aa_upload(path, headers):
     """Загрузка файла чанками (безопасно для больших записей)."""
+
     def _chunks(f, size=5 * 1024 * 1024):
         while True:
             chunk = f.read(size)
@@ -230,8 +238,9 @@ def _aa_upload(path, headers):
             yield chunk
 
     with open(path, "rb") as f:
-        r = requests.post(f"{AA_BASE}/v2/upload", headers=headers,
-                          data=_chunks(f), timeout=600)
+        r = requests.post(
+            f"{AA_BASE}/v2/upload", headers=headers, data=_chunks(f), timeout=600
+        )
     r.raise_for_status()
     return r.json()["upload_url"]
 
@@ -250,12 +259,13 @@ def _transcribe_assemblyai_url(audio_url):
         "audio_url": audio_url,
         "speech_models": ["universal-3-5-pro", "universal-2"],
         "language_code": config.ASSEMBLYAI_LANGUAGE,
-        "speaker_labels": True,                       # диаризация
+        "speaker_labels": True,  # диаризация
         "speakers_expected": config.ASSEMBLYAI_SPEAKERS,
         "punctuate": True,
     }
-    r = requests.post(f"{AA_BASE}/v2/transcript", json=payload,
-                      headers=headers, timeout=60)
+    r = requests.post(
+        f"{AA_BASE}/v2/transcript", json=payload, headers=headers, timeout=60
+    )
     r.raise_for_status()
     transcript_id = r.json()["id"]
     log.debug("AssemblyAI: transcript_id={}, ожидание результата", transcript_id)
@@ -266,7 +276,9 @@ def _transcribe_assemblyai_url(audio_url):
         res = requests.get(poll_url, headers=headers, timeout=60).json()
         status = res.get("status")
         if status == "completed":
-            log.debug("AssemblyAI: transcript_id={}, распознавание завершено", transcript_id)
+            log.debug(
+                "AssemblyAI: transcript_id={}, распознавание завершено", transcript_id
+            )
             break
         if status == "error":
             raise RuntimeError(f"AssemblyAI: {res.get('error')}")
@@ -338,12 +350,19 @@ def transcribe_call(client, deal_id, call):
         return txt_path
 
     if use_assemblyai_direct() and call.get("file_ids"):
-        log.debug("Сущность {} звонок {}: транскрибация по прямой ссылке", deal_id, act_id)
+        log.debug(
+            "Сущность {} звонок {}: транскрибация по прямой ссылке", deal_id, act_id
+        )
         try:
             text = _transcribe_assemblyai_direct(client, call)
-        except Exception as e:
-            log.warning("Сущность {} звонок {}: прямая ссылка не сработала ({}) "
-                        "— скачиваю и загружаю файлом", deal_id, act_id, e)
+        except Exception as e:  # noqa: BLE001 — резервная загрузка вместо прямой ссылки
+            log.warning(
+                "Сущность {} звонок {}: прямая ссылка не сработала ({}) "
+                "— скачиваю и загружаю файлом",
+                deal_id,
+                act_id,
+                e,
+            )
         else:
             if not text:
                 return None
@@ -357,20 +376,28 @@ def transcribe_call(client, deal_id, call):
         if call.get("file_ids"):
             audio_path = download_call_recording(client, deal_id, call)
         elif call.get("recording_url"):
-            audio_path = os.path.join(config.AUDIO_DIR, f"deal{deal_id}_call{act_id}.mp3")
+            audio_path = os.path.join(
+                config.AUDIO_DIR, f"deal{deal_id}_call{act_id}.mp3"
+            )
             try:
                 download_recording(call["recording_url"], audio_path)
-            except Exception:
-                log.exception("Сущность {} звонок {}: запись не скачана", deal_id, act_id)
+            except Exception:  # noqa: BLE001 — ошибка записи не останавливает остальные звонки
+                log.exception(
+                    "Сущность {} звонок {}: запись не скачана", deal_id, act_id
+                )
                 return None
     if not audio_path:
         return None
 
     try:
-        log.debug("Сущность {} звонок {}: транскрибация локального аудио", deal_id, act_id)
+        log.debug(
+            "Сущность {} звонок {}: транскрибация локального аудио", deal_id, act_id
+        )
         text = transcribe_file(audio_path)
-    except Exception:
-        log.exception("Сущность {} звонок {}: транскрибация не удалась", deal_id, act_id)
+    except Exception:  # noqa: BLE001 — ошибка транскрибации не останавливает выгрузку
+        log.exception(
+            "Сущность {} звонок {}: транскрибация не удалась", deal_id, act_id
+        )
         return None
     if not text:
         return None

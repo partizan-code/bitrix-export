@@ -54,7 +54,7 @@ def load():
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except Exception as e:
+    except (OSError, ValueError) as e:
         log.warning("registry.json не прочитан ({}) — считаю реестр пустым", e)
         return {}
 

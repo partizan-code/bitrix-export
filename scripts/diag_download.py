@@ -12,7 +12,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     ids = args.activity_ids or args.file_ids
     if len(ids) > 4:
         parser.error("За один запуск допускается не более четырёх ID")
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     destination = (
         args.log or Path(config.BASE_DIR) / f"diag_download_{stamp}_{os.getpid()}.log"
     )
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         configured = True
         event(
             "environment",
-            time_utc=datetime.now(timezone.utc).isoformat(),
+            time_utc=datetime.now(UTC).isoformat(),
             python=platform.python_version(),
             system=platform.system(),
             release=platform.release(),

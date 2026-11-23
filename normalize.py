@@ -37,7 +37,9 @@ def _base(deal, ts, channel, event_type):
         "event_type": event_type,
         "direction": None,
         "actor": {"type": "system", "user_id": None, "name": None},
-        "responsible_user_id": int(deal["ASSIGNED_BY_ID"]) if deal.get("ASSIGNED_BY_ID") else None,
+        "responsible_user_id": int(deal["ASSIGNED_BY_ID"])
+        if deal.get("ASSIGNED_BY_ID")
+        else None,
         "client": {
             "contact_id": int(deal["CONTACT_ID"]) if deal.get("CONTACT_ID") else None,
             "name": deal.get("_contact_name"),
@@ -80,9 +82,11 @@ def tp_from_call(deal, call, users_map, history, stages_map, transcript_info):
         "transcript_status": status,
         "comment": call.get("comment"),
     }
-    tp["source"] = {"activity_id": call.get("activity_id"),
-                    "stat_id": call.get("stat_id"),
-                    "file_ids": call.get("file_ids")}
+    tp["source"] = {
+        "activity_id": call.get("activity_id"),
+        "stat_id": call.get("stat_id"),
+        "file_ids": call.get("file_ids"),
+    }
     return _fill_stage(tp, history, stages_map)
 
 
@@ -122,8 +126,12 @@ def tp_from_comment(deal, row, users_map, history, stages_map):
 def tp_from_activity(deal, act, users_map, history, stages_map):
     is_email = str(act.get("TYPE_ID")) == "3"
     channel = "email" if is_email else "meeting"
-    tp = _base(deal, act.get("START_TIME") or act.get("CREATED"), channel,
-               "email" if is_email else "meeting")
+    tp = _base(
+        deal,
+        act.get("START_TIME") or act.get("CREATED"),
+        channel,
+        "email" if is_email else "meeting",
+    )
     tp["touchpoint_id"] = f"act_{act['ID']}"
     uid = int(act["AUTHOR_ID"]) if act.get("AUTHOR_ID") else None
     tp["actor"] = {
@@ -131,7 +139,9 @@ def tp_from_activity(deal, act, users_map, history, stages_map):
         "user_id": uid,
         "name": user_name(users_map, uid) if uid else None,
     }
-    tp["direction"] = {1: "in", 2: "out"}.get(int(act.get("DIRECTION") or 0), "internal")
+    tp["direction"] = {1: "in", 2: "out"}.get(
+        int(act.get("DIRECTION") or 0), "internal"
+    )
     subject = act.get("SUBJECT") or ""
     descr = act.get("DESCRIPTION") or ""
     tp["content"] = {
@@ -144,8 +154,14 @@ def tp_from_activity(deal, act, users_map, history, stages_map):
 
 # ------------------------------------------------------------------ задачи
 TASK_STATUS = {
-    -1: "Просрочена", 1: "Новая", 2: "Назначена", 3: "Выполняется",
-    4: "Ожидает контроля", 5: "Завершена", 6: "Отложена", 7: "Отклонена",
+    -1: "Просрочена",
+    1: "Новая",
+    2: "Назначена",
+    3: "Выполняется",
+    4: "Ожидает контроля",
+    5: "Завершена",
+    6: "Отложена",
+    7: "Отклонена",
 }
 
 
@@ -199,7 +215,9 @@ def tp_stage_events(deal, history, stages_map):
         tp["content"] = {
             "type": "meta",
             "text": "",
-            "stage_from": {"stage_id": prev, "name": stages_map.get(prev)} if prev else None,
+            "stage_from": {"stage_id": prev, "name": stages_map.get(prev)}
+            if prev
+            else None,
             "stage_to": {"stage_id": sid, "name": stages_map.get(sid, sid)},
         }
         tp["deal_stage_at_time"] = {"stage_id": sid, "name": stages_map.get(sid, sid)}

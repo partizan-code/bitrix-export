@@ -21,8 +21,8 @@ ACTIVITY_DIRECTION = {1: "in", 2: "out"}  # направление дела: 1 �
 
 PHONE_RE = re.compile(r"\+\d[\d\s\-()]{6,}\d")
 DURATION_RES = [
-    re.compile(r"(\d{1,2}):(\d{2}):(\d{2})"),          # 00:03:25
-    re.compile(r"(\d+)\s*мин\w*\s*(\d+)?\s*сек", re.I),  # 3 мин 25 сек
+    re.compile(r"(\d{1,2}):(\d{2}):(\d{2})"),  # 00:03:25
+    re.compile(r"(\d+)\s*мин\w*\s*(\d+)?\s*сек", re.IGNORECASE),  # 3 мин 25 сек
 ]
 
 
@@ -74,20 +74,33 @@ def get_deal_calls(client, deal_id, date_from=None, owner_type=2):
     - RESPONSIBLE_ID активности = сотрудник, который фактически говорил;
     - записи разговоров лежат в FILES активности (id файлов Диска).
     """
-    flt = {"OWNER_TYPE_ID": owner_type, "OWNER_ID": int(deal_id),
-           "TYPE_ID": 2}
+    flt = {"OWNER_TYPE_ID": owner_type, "OWNER_ID": int(deal_id), "TYPE_ID": 2}
     if date_from or config.DATE_FROM:
         flt[">=START_TIME"] = date_from or config.DATE_FROM
-    acts = client.call_list("crm.activity.list", {
-        "order": {"START_TIME": "ASC"},
-        "filter": flt,
-        "select": [
-            "ID", "SUBJECT", "DESCRIPTION", "START_TIME", "END_TIME",
-            "CREATED", "COMPLETED", "AUTHOR_ID", "RESPONSIBLE_ID",
-            "DIRECTION", "PROVIDER_ID", "PROVIDER_TYPE_ID", "PROVIDER_PARAMS",
-            "COMMUNICATIONS", "FILES",
-        ],
-    })
+    acts = client.call_list(
+        "crm.activity.list",
+        {
+            "order": {"START_TIME": "ASC"},
+            "filter": flt,
+            "select": [
+                "ID",
+                "SUBJECT",
+                "DESCRIPTION",
+                "START_TIME",
+                "END_TIME",
+                "CREATED",
+                "COMPLETED",
+                "AUTHOR_ID",
+                "RESPONSIBLE_ID",
+                "DIRECTION",
+                "PROVIDER_ID",
+                "PROVIDER_TYPE_ID",
+                "PROVIDER_PARAMS",
+                "COMMUNICATIONS",
+                "FILES",
+            ],
+        },
+    )
     # часть порталов не отдаёт FILES в списочном методе — добираем точечно
     for act in acts:
         if "FILES" not in act:
@@ -108,8 +121,9 @@ def get_builtin_transcript(client, activity_id):
     if not activity_id:
         return None
     try:
-        res = client.result("crm.activity.call.getTranscript",
-                            {"activityId": int(activity_id)})
+        res = client.result(
+            "crm.activity.call.getTranscript", {"activityId": int(activity_id)}
+        )
     except BitrixError as e:
         log.debug("getTranscript({}): {}", activity_id, e)
         return None
@@ -135,26 +149,32 @@ def normalize_call(act):
     params = act.get("PROVIDER_PARAMS") or {}
     if not isinstance(params, dict):
         params = {}
-    phone = (params.get("PHONE_NUMBER") or params.get("PHONE")
-             or _parse_phone(subject))
-    duration = (_parse_duration(descr) or _parse_duration(str(params))
-                or _duration_from_times(act.get("START_TIME"), act.get("END_TIME")))
+    phone = params.get("PHONE_NUMBER") or params.get("PHONE") or _parse_phone(subject)
+    duration = (
+        _parse_duration(descr)
+        or _parse_duration(str(params))
+        or _duration_from_times(act.get("START_TIME"), act.get("END_TIME"))
+    )
 
     try:
         direction_code = int(act.get("DIRECTION") or 0)
     except (TypeError, ValueError):
         direction_code = 0
 
-    missed = ("пропущен" in (subject + descr).lower()
-              or "missed" in (subject + descr).lower())
+    missed = (
+        "пропущен" in (subject + descr).lower() or "missed" in (subject + descr).lower()
+    )
 
     # Запись берём в расчёт только для состоявшегося разговора
     # длиннее MIN_RECORDING_DURATION_SEC. Если длительность неизвестна,
     # но файл есть — звонок точно состоялся (иначе записи бы не было),
     # такую запись сохраняем.
-    if missed or not file_ids:
-        file_ids = []
-    elif duration is not None and duration <= config.MIN_RECORDING_DURATION_SEC:
+    if (
+        missed
+        or not file_ids
+        or duration is not None
+        and duration <= config.MIN_RECORDING_DURATION_SEC
+    ):
         file_ids = []
 
     uid = act.get("RESPONSIBLE_ID") or act.get("AUTHOR_ID")
@@ -183,28 +203,51 @@ def get_activities(client, deal_id, type_ids, owner_type=2):
     """Активности сущности заданных типов (1 встреча, 3 письмо)."""
     if not type_ids:
         return []
-    return client.call_list("crm.activity.list", {
-        "order": {"CREATED": "ASC"},
-        "filter": {
-            "OWNER_TYPE_ID": owner_type,  # 2 сделка, 1 лид
-            "OWNER_ID": int(deal_id),
-            "@TYPE_ID": list(type_ids),
+    return client.call_list(
+        "crm.activity.list",
+        {
+            "order": {"CREATED": "ASC"},
+            "filter": {
+                "OWNER_TYPE_ID": owner_type,  # 2 сделка, 1 лид
+                "OWNER_ID": int(deal_id),
+                "@TYPE_ID": list(type_ids),
+            },
+            "select": [
+                "ID",
+                "TYPE_ID",
+                "SUBJECT",
+                "DESCRIPTION",
+                "DESCRIPTION_TYPE",
+                "START_TIME",
+                "END_TIME",
+                "CREATED",
+                "COMPLETED",
+                "AUTHOR_ID",
+                "RESPONSIBLE_ID",
+                "DIRECTION",
+                "PROVIDER_ID",
+                "PROVIDER_TYPE_ID",
+                "COMMUNICATIONS",
+            ],
         },
-        "select": [
-            "ID", "TYPE_ID", "SUBJECT", "DESCRIPTION", "DESCRIPTION_TYPE",
-            "START_TIME", "END_TIME", "CREATED", "COMPLETED",
-            "AUTHOR_ID", "RESPONSIBLE_ID", "DIRECTION",
-            "PROVIDER_ID", "PROVIDER_TYPE_ID",
-            "COMMUNICATIONS",
-        ],
-    })
+    )
 
 
 # ------------------------------------------------------------------ комментарии
 def get_timeline_comments(client, deal_id, entity_type="deal"):
     """Комментарии менеджеров в таймлайне сущности (deal/lead)."""
-    return client.call_list("crm.timeline.comment.list", {
-        "order": {"CREATED": "ASC"},
-        "filter": {"ENTITY_ID": int(deal_id), "ENTITY_TYPE": entity_type},
-        "select": ["ID", "ENTITY_ID", "ENTITY_TYPE", "COMMENT", "AUTHOR_ID", "CREATED"],
-    })
+    return client.call_list(
+        "crm.timeline.comment.list",
+        {
+            "order": {"CREATED": "ASC"},
+            "filter": {"ENTITY_ID": int(deal_id), "ENTITY_TYPE": entity_type},
+            "select": [
+                "ID",
+                "ENTITY_ID",
+                "ENTITY_TYPE",
+                "COMMENT",
+                "AUTHOR_ID",
+                "CREATED",
+            ],
+        },
+    )

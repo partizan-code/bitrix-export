@@ -5,14 +5,23 @@
 Источник: tasks.task.list (постранично).
 """
 
-
 from api_client import BitrixError
 from logging_setup import log
 
 TASK_SELECT = [
-    "ID", "TITLE", "DESCRIPTION", "STATUS", "REAL_STATUS",
-    "RESPONSIBLE_ID", "CREATED_BY", "CREATED_BY_ID",
-    "CREATED_DATE", "DEADLINE", "CLOSED_DATE", "START_DATE_PLAN", "END_DATE_PLAN",
+    "ID",
+    "TITLE",
+    "DESCRIPTION",
+    "STATUS",
+    "REAL_STATUS",
+    "RESPONSIBLE_ID",
+    "CREATED_BY",
+    "CREATED_BY_ID",
+    "CREATED_DATE",
+    "DEADLINE",
+    "CLOSED_DATE",
+    "START_DATE_PLAN",
+    "END_DATE_PLAN",
 ]
 
 
@@ -22,11 +31,14 @@ def get_deal_tasks(client, deal_id, prefix="D"):
     prefix: "D" — сделка (D_<id>), "L" — лид (L_<id>).
     """
     try:
-        return client.call_list("tasks.task.list", {
-            "order": {"CREATED_DATE": "ASC"},
-            "filter": {"UF_CRM_TASK": f"{prefix}_{int(deal_id)}"},
-            "select": TASK_SELECT,
-        })
+        return client.call_list(
+            "tasks.task.list",
+            {
+                "order": {"CREATED_DATE": "ASC"},
+                "filter": {"UF_CRM_TASK": f"{prefix}_{int(deal_id)}"},
+                "select": TASK_SELECT,
+            },
+        )
     except BitrixError as e:
         log.warning("{}_{}: tasks.task.list: {}", prefix, deal_id, e)
         return []

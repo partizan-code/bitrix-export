@@ -16,6 +16,7 @@ import subprocess
 import sys
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -29,18 +30,23 @@ import config  # загружает .env и даёт пути DATA_DIR/EXPORT_DI
 from logging_setup import log, run_cli
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
-ALLOWED = {int(x) for x in os.environ.get("TG_CHAT_ID", "")
-           .replace(" ", "").split(",") if x}
+ALLOWED = {
+    int(x) for x in os.environ.get("TG_CHAT_ID", "").replace(" ", "").split(",") if x
+}
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOCK = os.path.join(config.DATA_DIR, "sync.lock")
 PROGRESS = os.path.join(config.DATA_DIR, "progress.json")
 
-KB = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="▶️ Запустить выгрузку", callback_data="run")]])
+KB = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ Запустить выгрузку", callback_data="run")]
+    ]
+)
 
-MAX_TG_FILE = 45 * 1024 * 1024   # лимит Bot API ~50 МБ, берём с запасом
-POLL_SEC = 5                    # период обновления прогресса в чате
+MAX_TG_FILE = 45 * 1024 * 1024  # лимит Bot API ~50 МБ, берём с запасом
+POLL_SEC = 5  # период обновления прогресса в чате
+START_LOCK = asyncio.Lock()
 
 
 # ------------------------------------------------------------------ helpers
@@ -53,9 +59,9 @@ def running_pid():
     try:
         with open(LOCK, "r", encoding="utf-8") as f:
             pid = int(f.read().strip())
-        os.kill(pid, 0)          # жив ли процесс
+        os.kill(pid, 0)  # жив ли процесс
         return pid
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -63,8 +69,36 @@ def read_progress():
     try:
         with open(PROGRESS, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (OSError, ValueError):
         return None
+
+
+def start_sync():
+    """Запустить выгрузку и атомарно записать PID; вызывается в рабочем потоке."""
+    try:
+        os.remove(PROGRESS)
+    except OSError:
+        pass
+    proc = subprocess.Popen(
+        [sys.executable, "sync.py"], cwd=BASE, env=os.environ.copy()
+    )
+    temporary = LOCK + ".tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
+        os.replace(temporary, LOCK)
+    except BaseException:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        raise
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return proc
 
 
 def latest_zip():
@@ -79,22 +113,28 @@ def fmt_progress(p):
     ent = p.get("entity")
     if ent:
         title = "Сделки" if ent == "deal" else "Лиды"
-        return (f"⚙️ {title}: {p.get('stage', '')}\n"
-                f"Обработано: {p.get('processed', 0)} / {p.get('total', 0)}\n"
-                f"Из store без обработки: {p.get('reused', 0)}\n"
-                f"Ошибок: {p.get('errors', 0)}")
+        return (
+            f"⚙️ {title}: {p.get('stage', '')}\n"
+            f"Обработано: {p.get('processed', 0)} / {p.get('total', 0)}\n"
+            f"Из store без обработки: {p.get('reused', 0)}\n"
+            f"Ошибок: {p.get('errors', 0)}"
+        )
     return "⏳ Финальная сборка (manifest, архив)…"
 
 
 def fmt_done(p, returncode):
     ok = returncode == 0
-    lines = ["✅ Выгрузка завершена." if ok
-             else f"⚠️ sync.py завершился с кодом {returncode} — см. лог."]
+    lines = [
+        "✅ Выгрузка завершена."
+        if ok
+        else f"⚠️ sync.py завершился с кодом {returncode} — см. лог."
+    ]
     if p:
         lines.append(f"Сделок: {p.get('deals', 0)}, лидов: {p.get('leads', 0)}")
         if p.get("errors"):
-            lines.append(f"Ошибок: {p['errors']} "
-                         f"(объекты повторятся при следующем запуске)")
+            lines.append(
+                f"Ошибок: {p['errors']} (объекты повторятся при следующем запуске)"
+            )
         if p.get("zip"):
             lines.append(f"Архив: {p['zip']}")
     return "\n".join(lines)
@@ -110,7 +150,7 @@ async def monitor(msg: Message, proc: subprocess.Popen):
             try:
                 await msg.edit_text(text)
                 last_text = text
-            except Exception as e:
+            except TelegramAPIError as e:
                 log.debug("edit progress: {}", e)
         await asyncio.sleep(POLL_SEC)
 
@@ -127,7 +167,7 @@ async def monitor(msg: Message, proc: subprocess.Popen):
     p = read_progress()
     try:
         await msg.edit_text(fmt_done(p, proc.returncode), reply_markup=KB)
-    except Exception as e:
+    except TelegramAPIError as e:
         log.debug("edit done: {}", e)
 
     zpath = latest_zip()
@@ -138,11 +178,13 @@ async def monitor(msg: Message, proc: subprocess.Popen):
     if size <= MAX_TG_FILE:
         await msg.answer_document(
             FSInputFile(zpath, filename=os.path.basename(zpath)),
-            caption=f"Снимок ({size / 1024 / 1024:.1f} МБ)")
+            caption=f"Снимок ({size / 1024 / 1024:.1f} МБ)",
+        )
     else:
         await msg.answer(
             f"Архив {size / 1024 / 1024:.1f} МБ — больше лимита Telegram.\n"
-            f"Заберите с сервера:\n{zpath}")
+            f"Заберите с сервера:\n{zpath}"
+        )
 
 
 # ------------------------------------------------------------------ handlers
@@ -155,8 +197,9 @@ async def cmd_start(m: Message):
         log.warning("Чужой чат {}", m.chat.id)
         return
     pid = running_pid()
-    text = (f"⚙️ Выгрузка сейчас идёт (PID {pid})." if pid
-            else "Сервис выгрузки из Bitrix24")
+    text = (
+        f"⚙️ Выгрузка сейчас идёт (PID {pid})." if pid else "Сервис выгрузки из Bitrix24"
+    )
     await m.answer(text, reply_markup=KB)
 
 
@@ -167,24 +210,15 @@ async def on_run(q: CallbackQuery):
         log.warning("Чужой чат {}", q.message.chat.id)
         return
 
-    pid = running_pid()
-    if pid:
-        await q.message.edit_text(
-            f"⚠️ Выгрузка уже идёт (PID {pid}) — дождись завершения.",
-            reply_markup=KB)
-        return
-
-    # сброс прогресса прошлого прогона
-    try:
-        os.remove(PROGRESS)
-    except OSError:
-        pass
-
-    proc = subprocess.Popen(
-        [sys.executable, "sync.py"], cwd=BASE,
-        env=os.environ.copy())
-    with open(LOCK, "w", encoding="utf-8") as f:
-        f.write(str(proc.pid))
+    async with START_LOCK:
+        pid = await asyncio.to_thread(running_pid)
+        if pid:
+            await q.message.edit_text(
+                f"⚠️ Выгрузка уже идёт (PID {pid}) — дождись завершения.",
+                reply_markup=KB,
+            )
+            return
+        proc = await asyncio.to_thread(start_sync)
     log.info("sync.py запущен из бота, PID {}", proc.pid)
 
     msg = await q.message.edit_text("🚀 Выгрузка запущена…")
@@ -194,12 +228,15 @@ async def on_run(q: CallbackQuery):
 # ------------------------------------------------------------------ main
 def main():
     if not TOKEN:
-        raise SystemExit("Не задан TG_BOT_TOKEN. Укажите его в файле .env "
-                         "рядом с config.py.")
+        raise SystemExit(
+            "Не задан TG_BOT_TOKEN. Укажите его в файле .env рядом с config.py."
+        )
     if not ALLOWED:
-        raise SystemExit("Не задан TG_CHAT_ID. Укажите его в файле .env "
-                         "рядом с config.py — "
-                         "без него кнопкой мог бы воспользоваться любой")
+        raise SystemExit(
+            "Не задан TG_CHAT_ID. Укажите его в файле .env "
+            "рядом с config.py — "
+            "без него кнопкой мог бы воспользоваться любой"
+        )
     bot = Bot(TOKEN)
     log.info("Бот запущен: разрешённых чатов {}", len(ALLOWED))
     asyncio.run(dp.start_polling(bot))
