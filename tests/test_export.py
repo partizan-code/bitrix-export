@@ -1160,6 +1160,274 @@ class ExportTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.sync.BitrixError, "сессии"):
                     self.sync.fetch_openlines.get_chat_history(client, 61)
 
+    def test_explicit_chat_session_uses_session_id_and_checks_chat(self):
+        page = self.chat_page("10")
+        page["chatId"] = 61
+        client = Mock()
+        client.result.return_value = page
+        messages, _ = self.sync.fetch_openlines.get_chat_history(
+            client, 61, session_id=321
+        )
+        self.assertEqual(len(messages), 1)
+        client.result.assert_called_once_with(
+            "imopenlines.session.history.get", {"SESSION_ID": 321}
+        )
+        for chat_id in (62, None):
+            with self.subTest(chat_id=chat_id):
+                page["chatId"] = chat_id
+                with self.assertRaisesRegex(self.sync.BitrixError, "чату"):
+                    self.sync.fetch_openlines.get_chat_history(
+                        client, 61, session_id=321
+                    )
+
+    def session_compare_source(self, module, sessions):
+        """Страницы списка по одному элементу, включая дробные границы периодов."""
+
+        def result(method, params):
+            self.assertEqual(method, module.SESSION_LIST)
+            if "dateCreateFrom" not in params:
+                return {"sessions": sessions[:1], "hasNextPage": len(sessions) > 1}
+            start, end = (
+                module.stamp(params["dateCreateFrom"]),
+                module.stamp(params["dateCreateTo"]),
+            )
+            self.assertLessEqual(end - start, timedelta(days=365))
+            self.assertLessEqual(params["offset"], module.MAX_OFFSET)
+            selected = [
+                s for s in sessions if start <= module.stamp(s["dateCreate"]) <= end
+            ]
+            offset = params["offset"]
+            return {
+                "sessions": selected[offset : offset + 1],
+                "hasNextPage": offset + 1 < len(selected),
+            }
+
+        return result
+
+    def test_session_compare_lists_full_history_with_overlapping_year_windows(self):
+        module = load_script("compare_chat_sessions")
+        dates = (
+            "2024-01-01T00:00:00+00:00",
+            "2024-12-31T00:00:00.500+00:00",
+            "2025-04-01T00:00:00+00:00",
+        )
+        sessions = [
+            {"id": i, "chatId": 61, "dateCreate": date}
+            for i, date in enumerate(dates, 1)
+        ]
+        client = Mock()
+        client.result.side_effect = self.session_compare_source(module, sessions)
+        result = module.collect_sessions(
+            client, module.stamp("2025-05-01T00:00:00+00:00")
+        )
+        self.assertEqual(set(result), {1, 2, 3})
+        self.assertGreater(client.result.call_count, 3)
+
+    def test_session_compare_splits_window_before_offset_limit(self):
+        module = load_script("compare_chat_sessions")
+        sessions = [
+            {"id": i, "chatId": 61, "dateCreate": f"2026-01-0{i}T00:00:00+00:00"}
+            for i in range(1, 5)
+        ]
+        client = Mock()
+        with patch.object(module, "MAX_OFFSET", 2):
+            client.result.side_effect = self.session_compare_source(module, sessions)
+            result = module.collect_sessions(
+                client, module.stamp("2026-01-04T00:00:00+00:00")
+            )
+        self.assertEqual(set(result), {1, 2, 3, 4})
+        self.assertTrue(
+            any(
+                c.args[1].get("dateCreateFrom") not in (None, sessions[0]["dateCreate"])
+                for c in client.result.call_args_list
+            )
+        )
+
+    def test_session_compare_repeated_or_invalid_pages_and_budget_are_errors(self):
+        module = load_script("compare_chat_sessions")
+        session = {"id": 1, "chatId": 61, "dateCreate": "2026-01-01T00:00:00+00:00"}
+        client = Mock()
+        client.result.return_value = {"sessions": [session], "hasNextPage": True}
+        with self.assertRaisesRegex(module.ComparisonError, "REPEATED_SESSION_PAGE"):
+            module.collect_sessions(client, module.stamp("2026-01-02T00:00:00+00:00"))
+        for result in (
+            None,
+            {"sessions": [], "hasNextPage": True},
+            {"sessions": [], "hasNextPage": "false"},
+        ):
+            client.result.return_value = result
+            with self.subTest(result=result), self.assertRaises(module.ComparisonError):
+                module.list_page(client, {})
+        limited = module.BudgetClient(client, 1)
+        limited.result("first")
+        with self.assertRaisesRegex(module.ComparisonError, "CALL_BUDGET_EXCEEDED"):
+            limited.result("second")
+
+    def test_session_compare_dense_second_is_reported_as_incomplete(self):
+        module = load_script("compare_chat_sessions")
+        sessions = [
+            {"id": i, "chatId": 61, "dateCreate": "2026-01-01T00:00:00+00:00"}
+            for i in range(1, 5)
+        ]
+        client = Mock()
+        client.result.side_effect = self.session_compare_source(module, sessions)
+        with (
+            patch.object(module, "MAX_OFFSET", 2),
+            self.assertRaisesRegex(module.ComparisonError, "SESSION_WINDOW_TOO_DENSE"),
+        ):
+            module.collect_sessions(client, module.stamp("2026-01-01T00:00:00+00:00"))
+
+    def compare_existing_snapshot(
+        self, *, fail_list=False, fail_history=False, missing_old=False, new_chat=False
+    ):
+        """Изменять разрешено только новый каталог; рабочая выгрузка неизменна."""
+        self.run_sync()
+        module = load_script("compare_chat_sessions")
+        module.ROOT = self.root
+        baseline = module.load_baseline(self.root)
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        sessions = [
+            {"id": 320, "chatId": 61, "dateCreate": "2026-11-01T00:00:00+03:00"},
+            {"id": 321, "chatId": 61, "dateCreate": "2026-11-02T00:00:00+03:00"},
+        ]
+        if new_chat:
+            sessions.append(
+                {
+                    "id": 330,
+                    "chatId": 62,
+                    "dateCreate": "2026-11-03T00:00:00+03:00",
+                    "crmEntityType": "deal",
+                    "crmEntityId": 1,
+                    "source": "telegrambot",
+                }
+            )
+        paged = self.session_compare_source(module, sessions)
+        api = Mock()
+
+        def result(method, params):
+            if method == module.SESSION_LIST:
+                if fail_list:
+                    raise self.sync.BitrixError(
+                        method, "TARIFF_RESTRICTION", "https://example.invalid/secret"
+                    )
+                return paged(method, params)
+            if method == "imopenlines.session.history.get":
+                if params["SESSION_ID"] == 330:
+                    page = self.chat_page("5")
+                    page.update(chatId=62, sessionId=330)
+                    return page
+                if fail_history and params["SESSION_ID"] == 320:
+                    raise self.sync.BitrixError(
+                        method, "ACCESS_DENIED", "authorization=private-value"
+                    )
+                page = (
+                    self.chat_page("1")
+                    if params["SESSION_ID"] == 321
+                    else self.chat_page("3")
+                )
+                page["sessionId"] = params["SESSION_ID"]
+                page["chatId"] = 61
+                if params["SESSION_ID"] == 320:
+                    page["message"]["3"]["date"] = "2026-11-01T12:00:00+03:00"
+                else:
+                    page["message"]["4"] = {
+                        "id": "4",
+                        "senderid": "17",
+                        "date": "2026-11-24T12:00:00+03:00",
+                        "text": "Новое после снимка",
+                    }
+                    if missing_old:
+                        page["message"].pop("1")
+                return page
+            return self.client.result(method, params)
+
+        api.result.side_effect = result
+        output = self.root / "data/session_comparisons/test"
+        report = module.rebuild(api, baseline, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        self.assertEqual(
+            module.read_json(output / "report.json"), json.loads(json.dumps(report))
+        )
+        serialized = json.dumps(report)
+        for secret in ("https://example.invalid/secret", "private-value"):
+            self.assertNotIn(secret, serialized)
+        return module, api, baseline, output, report
+
+    def test_session_compare_rebuilds_old_and_new_messages_without_touching_snapshot(
+        self,
+    ):
+        module, api, baseline, output, report = self.compare_existing_snapshot()
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["summary"]["changed_entities"], 6)
+        self.assertEqual(report["summary"]["added_messages"], 12)
+        self.assertEqual(report["summary"]["added_before_baseline"], 6)
+        self.assertEqual(report["summary"]["added_after_baseline"], 6)
+        calls = [
+            c
+            for c in api.result.call_args_list
+            if c.args[0] == "imopenlines.session.history.get"
+        ]
+        self.assertEqual(len(calls), 2)
+        for (entity, did), old in baseline["entities"].items():
+            rebuilt = module.read_jsonl(output / entity / old["group"] / f"{did}.jsonl")
+            self.assertTrue(all(tp in rebuilt for tp in old["tps"]))
+            self.assertEqual(len(rebuilt), len(old["tps"]) + 2)
+            self.assertTrue((output / entity / old["group"] / f"{did}.md").is_file())
+
+    def test_session_compare_denied_list_is_partial_not_no_new_dialogs(self):
+        _, _, _, output, report = self.compare_existing_snapshot(fail_list=True)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["errors"], ["TARIFF_RESTRICTION"])
+        self.assertEqual(list((output / "deal").rglob("*.md")), [])
+        self.assertEqual(list((output / "lead").rglob("*.md")), [])
+        self.assertIn(
+            "Сравнение неполное", (output / "comparison.md").read_text(encoding="utf-8")
+        )
+
+    def test_session_compare_denied_history_continues_with_partial_result(self):
+        _, _, _, _, report = self.compare_existing_snapshot(fail_history=True)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["summary"]["entities"], 6)
+        self.assertTrue(all("ACCESS_DENIED" in e["errors"] for e in report["entities"]))
+
+    def test_session_compare_preserves_messages_not_returned_by_api(self):
+        module, _, baseline, output, report = self.compare_existing_snapshot(
+            missing_old=True
+        )
+        self.assertEqual(report["status"], "partial")
+        self.assertTrue(
+            all(e["not_returned_message_ids"] == [(61, 1)] for e in report["entities"])
+        )
+        for (entity, did), old in baseline["entities"].items():
+            rebuilt = module.read_jsonl(output / entity / old["group"] / f"{did}.jsonl")
+            self.assertTrue(all(tp in rebuilt for tp in old["tps"]))
+
+    def test_session_compare_finds_new_chat_from_session_crm_binding(self):
+        _, _, _, _, report = self.compare_existing_snapshot(new_chat=True)
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["summary"]["new_chats"], 1)
+        deal = next(
+            e for e in report["entities"] if (e["entity"], e["id"]) == ("deal", 1)
+        )
+        self.assertEqual(deal["new_chat_ids"], [62])
+        self.assertEqual(deal["chat_sessions"]["62"], 1)
+
+    def test_session_compare_plan_does_not_call_api_or_write_files(self):
+        self.run_sync()
+        module = load_script("compare_chat_sessions")
+        module.ROOT = self.root
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        with (
+            redirect_stdout(io.StringIO()),
+            patch.object(
+                self.sync, "B24Client", side_effect=AssertionError("API запрещён")
+            ),
+        ):
+            self.assertEqual(module.main([]), 0)
+        self.assertEqual(
+            {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}, before
+        )
+
     def test_chat_session_api_error_propagates_on_any_page(self):
         method = "imopenlines.session.history.get"
         for page_number in (1, 2):

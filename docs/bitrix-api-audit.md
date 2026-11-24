@@ -44,9 +44,18 @@
 
 ## Охват и метод
 
+Для отдельного эксперимента добавлен
+[скрипт сравнения всех сессий](operations.md#сравнение-всех-сессий-чатов).
+Он использует `imopenlines.v2.Session.list` для поиска SESSION_ID и текущий
+разбор `imopenlines.session.history.get` с явным SESSION_ID. Это отдельная
+пересборка чатов по существующему снимку; ограничение основного sync по
+последней сессии пока сохраняется. Скрипт отдельно учитывает неполноту,
+старые добавления и сообщения, поступившие после исходного снимка.
+
 Поиск по Python-файлам и чтение AST первоначально обнаружили 23 разных REST-метода.
 После перехода транскрибации только на AssemblyAI осталось 22 метода,
-после удаления IM fallback — 21. Реестр и рекомендации ниже обновлены
+после удаления IM fallback — 21; с экспериментальным скриптом — 22.
+Реестр и рекомендации ниже обновлены
 с учётом удаления этих источников.
 Учтены динамические `crm.{entity}.fields` для сделок и лидов, вызовы в
 `scripts/`, общий клиент, разбор ответов и использование данных в `sync.py`
@@ -83,6 +92,7 @@
 | [crm.timeline.comment.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/comments/crm-timeline-comment-list.html) | `fetch_activities.py:218` | Обязательные `ENTITY_ID/ENTITY_TYPE`, поля, сортировка и стандартная пагинация согласованы; вложения не нормализуются |
 | [imopenlines.crm.chat.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/chats/imopenlines-crm-chat-get.html) | `fetch_openlines.py:51` | Тип сущности, ID, `ACTIVE_ONLY=N` и массив привязок согласованы |
 | [imopenlines.session.history.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/sessions/imopenlines-session-history-get.html) | `fetch_openlines.get_chat_history` | Шаг 1: все страницы последней сессии через `SESSION_ID` и `LAST_ID/LAST_DATE`; предыдущие сессии не охвачены |
+| [imopenlines.v2.Session.list](https://apidocs.bitrix24.ru/api-reference/imopenlines/statistics/imopenlines-v2-session-list.html) | `scripts/compare_chat_sessions.collect_sessions` | Эксперимент: `result.sessions`, `offset/limit`, `hasNextPage`, окна до 365 дней; права на отчёты и тариф требуют проверки на портале |
 | [tasks.task.list](https://apidocs.bitrix24.ru/api-reference/tasks/tasks-task-list.html) | `fetch_tasks.py:34` | Для текущего REST допустимы объект `filter`, `UF_CRM_TASK`, `start` и `result.tasks`; смешанную карточку MCP нельзя применять как контракт REST 3.0 |
 | [user.get](https://apidocs.bitrix24.ru/api-reference/user/user-get.html) | `users.load_users`, `LazyUserMap._fetch` | Общая загрузка с `next/start` согласована; лишний повтор удалён на шаге 3, точечный запрос и кэш требуют уточнения ниже |
 | [crm.contact.get](https://apidocs.bitrix24.ru/api-reference/crm/contacts/crm-contact-get.html) | `users.py:155` | Параметр `id` и объект контакта согласованы; ошибки запроса навсегда кэшируются как отсутствие имени |

@@ -88,9 +88,9 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
     return chats
 
 
-def get_chat_history(client, chat_id, max_pages=None):
+def get_chat_history(client, chat_id, max_pages=None, *, session_id=None):
     """
-    Все страницы последней сессии чата открытой линии.
+    Все страницы выбранной сессии чата; без session_id — последней сессии.
 
     Предыдущие сессии этот путь не охватывает. Ошибка API на любой странице,
     некорректный курсор или предел страниц дают BitrixError, а не часть истории.
@@ -106,7 +106,7 @@ def get_chat_history(client, chat_id, max_pages=None):
     method = "imopenlines.session.history.get"
     params = {"CHAT_ID": int(chat_id)}
     messages, users_info, cursors = {}, {}, set()
-    session_id = None
+    explicit_session = session_id is not None
 
     def incomplete(reason: str) -> BitrixError:
         return BitrixError(method, "INCOMPLETE_HISTORY", f"Чат {chat_id}: {reason}")
@@ -119,11 +119,22 @@ def get_chat_history(client, chat_id, max_pages=None):
             raise ValueError
         return result
 
+    if explicit_session:
+        session_id = positive_int(session_id)
+        params = {"SESSION_ID": session_id}
+
     for _ in range(max_pages):
         res = client.result(method, dict(params))
 
         if not isinstance(res, dict):
             raise incomplete("ожидался объект истории сессии")
+        if explicit_session:
+            try:
+                same_chat = positive_int(res.get("chatId")) == int(chat_id)
+            except (TypeError, ValueError):
+                same_chat = False
+            if not same_chat:
+                raise incomplete("ответ относится к другому или неизвестному чату")
         if session_id is not None:
             try:
                 same_session = positive_int(res.get("sessionId")) == session_id
