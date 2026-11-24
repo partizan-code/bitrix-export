@@ -92,7 +92,7 @@ class SourceSqliteTests(unittest.TestCase):
                 "type": "transcript",
                 "text": "Первая строка\n  отступ 🎧",
                 "duration_sec": 125,
-                "transcript_status": "builtin",
+                "transcript_status": "assemblyai",
                 "failed_code": None,
                 "phone": "+000",
             },

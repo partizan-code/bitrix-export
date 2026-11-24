@@ -6,8 +6,7 @@
   - RESPONSIBLE_ID -> кто фактически говорил (не ответственный сделки!)
   - DIRECTION      -> направление (1 входящий, 2 исходящий)
   - FILES          -> id записей разговоров на Диске
-Транскрипцию сначала пробуем взять штатную (crm.activity.call.getTranscript —
-AI-расшифровка Bitrix), если нет — используем AssemblyAI согласно настройкам.
+Транскрипцию записи получает модуль transcribe через AssemblyAI согласно настройкам.
 """
 
 import re
@@ -111,27 +110,6 @@ def get_deal_calls(client, deal_id, date_from=None, owner_type=2):
                 log.debug("activity.get({}): {}", act["ID"], e)
                 act["FILES"] = []
     return acts
-
-
-def get_builtin_transcript(client, activity_id):
-    """
-    Штатная AI-расшифровка звонка. Возвращает текст или None
-    (метод отдаёт null, если расшифровки нет / она ещё не готова).
-    """
-    if not activity_id:
-        return None
-    try:
-        res = client.result(
-            "crm.activity.call.getTranscript", {"activityId": int(activity_id)}
-        )
-    except BitrixError as e:
-        log.debug("getTranscript({}): {}", activity_id, e)
-        return None
-    if isinstance(res, str):
-        return res or None
-    if isinstance(res, dict):
-        return res.get("TRANSCRIPT") or res.get("transcript") or None
-    return None
 
 
 def normalize_call(act):

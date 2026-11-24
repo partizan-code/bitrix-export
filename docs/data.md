@@ -392,8 +392,8 @@ ZIP-сжатие: с ростом истории размер увеличива
   `recording_url` текущего CRM-потока — `null`. Задачи: описание, статус, дедлайн,
   дата закрытия. Стадии: `stage_from` / `stage_to`.
 
-`transcript_status`: `builtin` / `assemblyai` — текст получен;
-`no_recording` — нет подходящей записи; `no_transcript` — внешний путь не дал
+`transcript_status`: `assemblyai` — текст получен;
+`no_recording` — нет подходящей записи; `no_transcript` — AssemblyAI не дал
 текста; `pending` — получение отключено/не запрашивалось, без обещания фонового задания.
 
 Индекс: `deal_id` **или** `lead_id`, `entity`, заголовок, даты, ответственный,

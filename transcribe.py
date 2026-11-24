@@ -17,6 +17,7 @@ import requests
 
 import config
 from logging_setup import log
+from performance import count, measure, timed
 
 AA_BASE = "https://api.assemblyai.com"
 
@@ -38,10 +39,13 @@ def resolve_file_url(file_info):
     return file_info.get("DOWNLOAD_URL") or None
 
 
+@timed("audio.download")
 def download_recording(url, dest_path):
     """Скачивание с потоковой записью. Повторно не качает."""
     if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+        count("audio.download_cache_hit")
         return dest_path
+    count("audio.download_cache_miss")
     tmp = dest_path + ".part"
     try:
         with requests.get(url, timeout=config.REQUEST_TIMEOUT, stream=True) as r:
@@ -227,6 +231,7 @@ def _aa_headers():
     return {"authorization": key}
 
 
+@timed("audio.upload")
 def _aa_upload(path, headers):
     """Загрузка файла чанками (безопасно для больших записей)."""
 
@@ -245,6 +250,7 @@ def _aa_upload(path, headers):
     return r.json()["upload_url"]
 
 
+@timed("audio.recognition")
 def _transcribe_assemblyai_url(audio_url):
     """
     Транскрибация через AssemblyAI с диаризацией по готовой ссылке
@@ -268,26 +274,31 @@ def _transcribe_assemblyai_url(audio_url):
     )
     r.raise_for_status()
     transcript_id = r.json()["id"]
+    count("audio.jobs_submitted")
     log.debug("AssemblyAI: transcript_id={}, ожидание результата", transcript_id)
 
     poll_url = f"{AA_BASE}/v2/transcript/{transcript_id}"
     deadline = time.time() + config.ASSEMBLYAI_TIMEOUT
-    while True:
-        res = requests.get(poll_url, headers=headers, timeout=60).json()
-        status = res.get("status")
-        if status == "completed":
-            log.debug(
-                "AssemblyAI: transcript_id={}, распознавание завершено", transcript_id
-            )
-            break
-        if status == "error":
-            raise RuntimeError(f"AssemblyAI: {res.get('error')}")
-        if time.time() > deadline:
-            raise TimeoutError(
-                f"AssemblyAI: транскрипт {transcript_id} не готов за "
-                f"{config.ASSEMBLYAI_TIMEOUT}с — повторите позже"
-            )
-        time.sleep(config.ASSEMBLYAI_POLL_INTERVAL)
+    with measure("audio.polling"):
+        while True:
+            count("audio.poll_requests")
+            res = requests.get(poll_url, headers=headers, timeout=60).json()
+            status = res.get("status")
+            if status == "completed":
+                count("audio.jobs_completed")
+                log.debug(
+                    "AssemblyAI: transcript_id={}, распознавание завершено",
+                    transcript_id,
+                )
+                break
+            if status == "error":
+                raise RuntimeError(f"AssemblyAI: {res.get('error')}")
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"AssemblyAI: транскрипт {transcript_id} не готов за "
+                    f"{config.ASSEMBLYAI_TIMEOUT}с — повторите позже"
+                )
+            time.sleep(config.ASSEMBLYAI_POLL_INTERVAL)
 
     utterances = res.get("utterances") or []
     if utterances:
@@ -337,6 +348,7 @@ def use_assemblyai_direct():
     return bool(getattr(config, "ASSEMBLYAI_DIRECT_URL", False))
 
 
+@timed("audio.transcript")
 def transcribe_call(client, deal_id, call):
     """
     Полный цикл для одного звонка: взять запись -> транскрибировать ->
@@ -347,7 +359,9 @@ def transcribe_call(client, deal_id, call):
     act_id = call.get("activity_id") or call.get("stat_id") or "x"
     txt_path = transcript_path(deal_id, call)
     if os.path.exists(txt_path):
+        count("audio.transcript_cache_hit")
         return txt_path
+    count("audio.transcript_cache_miss")
 
     if use_assemblyai_direct() and call.get("file_ids"):
         log.debug(

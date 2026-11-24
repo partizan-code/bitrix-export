@@ -139,7 +139,7 @@ store, новый snapshot и возможный ZIP. Это не изолиро
 | `SCHEMA_VERSION`, `SNAPSHOT_TZ`, `MAKE_SNAPSHOT_ZIP` | Схема 2, `Europe/Minsk`, ZIP включён |
 | `SNAPSHOT_SQLITE_ENABLED`, `SNAPSHOT_SQLITE_PATH` | После сборки ZIP сохранять конечные карточки в накопительную БД; включено, путь `data/sqlite3_snapshots.db` |
 | `FILE_BRAND`, `DEAL_COUNTRY_BY_CATEGORY`, `ZIP_NAME_TEMPLATE` | Бренд, соответствие ID воронки и страны сделки, имя архива; [правила страны](data.md#файлы-результата) |
-| `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,55 с, 5 попыток, тайм-аут 60 с |
+| `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,2 с, 5 попыток, тайм-аут 60 с |
 | `DATA_DIR`, `RAW_DIR`, `AUDIO_DIR`, `TRANSCRIPTS_DIR`, `EXPORT_DIR` | Пути через `os.path` относительно каталога проекта |
 | `DEBUG_LOG_PATH`, `ERROR_LOG_PATH` | `debug.log` и `error.log` в корне проекта, независимо от текущего каталога запуска |
 
@@ -157,12 +157,9 @@ TO `23:59:59`. `DATE_FROM` заменяет начало периода, сох�
 
 ## Транскрибация
 
-Порядок в `sync.resolve_transcript`: штатная расшифровка при
-`PREFER_BUILTIN_TRANSCRIPT=True` → AssemblyAI при наличии записи и
-`TRANSCRIBE_ENABLED=True`. Сейчас штатный приоритет выключен, AssemblyAI включён.
-Чтобы отключить только AssemblyAI, задайте `TRANSCRIBE_ENABLED=False`.
-Чтобы отключить все транскрипции, дополнительно задайте
-`PREFER_BUILTIN_TRANSCRIPT=False`.
+`sync.resolve_transcript` получает текст только через AssemblyAI при наличии
+записи и `TRANSCRIBE_ENABLED=True` (включено по умолчанию).
+Чтобы отключить транскрибацию, задайте `TRANSCRIBE_ENABLED=False`.
 
 - AssemblyAI: ключ `ASSEMBLYAI_API_KEY` из `.env` через `config.py`, язык `ru`,
   подсказка 2 спикера, опрос каждые 3 с, ожидание до 900 с. Настройки `ASSEMBLYAI_*`.

@@ -18,8 +18,9 @@ ZIP (если включён и результат непустой), прогр
 | Модуль | Ответственность / API |
 |---|---|
 | [api_client.py](../api_client.py) | `B24Client.call/result/call_list`, POST JSON, пагинация `start/next`, массивы и `items`/`tasks` |
+| [performance.py](../performance.py) | Профиль одного `sync.main`: монотонные таймеры, счётчики API/аудио, итоговые агрегаты в Loguru; [интерпретация](operations.md#время-выгрузки-и-запросов) |
 | [fetch_deals.py](../fetch_deals.py), [fetch_leads.py](../fetch_leads.py) | `crm.deal/lead.list/get/fields`, поля `*` + `UF_*`, группы, инкремент; `crm.stagehistory.list`, `stage_at` |
-| [fetch_activities.py](../fetch_activities.py) | `crm.activity.list/get`: звонки TYPE_ID=2, письма 3, встречи 1; `crm.activity.call.getTranscript`, `crm.timeline.comment.list` |
+| [fetch_activities.py](../fetch_activities.py) | `crm.activity.list/get`: звонки TYPE_ID=2, письма 3, встречи 1; `crm.timeline.comment.list` |
 | [fetch_openlines.py](../fetch_openlines.py) | `imopenlines.crm.chat.get`, `imopenlines.session.history.get`, fallback `im.dialog.messages.get` |
 | [fetch_tasks.py](../fetch_tasks.py) | `tasks.task.list`, `UF_CRM_TASK=D_<id>` / `L_<id>` |
 | [users.py](../users.py) | `user.get`, `crm.contact.get`, `crm.status.list`, `crm.category.list`; кэши, `ContactBook`, `LazyUserMap` |
@@ -73,7 +74,7 @@ ZIP (если включён и результат непустой), прогр
 | `sync.resolve_transcript` | `(client, deal_id, call)` |
 
 Объект CLI-аргументов удалён также из `sync.run_entity` и `sync.process_entity`.
-Транскрибация управляется `PREFER_BUILTIN_TRANSCRIPT` и `TRANSCRIBE_ENABLED`.
+Транскрибация выполняется только через AssemblyAI и управляется `TRANSCRIBE_ENABLED`.
 Обёртка `logging_setup.run_cli` сохранена для логирования и кодов завершения
 бота, выгрузки и служебных скриптов.
 

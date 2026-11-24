@@ -8,7 +8,9 @@
 
 ## Охват и метод
 
-Поиск по Python-файлам и чтение AST обнаружили 23 разных REST-метода.
+Поиск по Python-файлам и чтение AST первоначально обнаружили 23 разных REST-метода.
+После перехода транскрибации только на AssemblyAI осталось 22 метода;
+реестр и рекомендации ниже обновлены с учётом удаления этого источника.
 Учтены динамические `crm.{entity}.fields` для сделок и лидов, вызовы в
 `scripts/`, общий клиент, разбор ответов и использование данных в `sync.py`
 и `normalize.py`. Обёртки `scripts/refresh_names.py` используют те же функции
@@ -39,10 +41,9 @@
 | [crm.lead.get](https://apidocs.bitrix24.ru/api-reference/crm/leads/crm-lead-get.html) | `fetch_leads.py:45` | `id` корректен; обход фильтра дат аналогичен сделкам |
 | [crm.lead.fields](https://apidocs.bitrix24.ru/api-reference/crm/leads/crm-lead-fields.html) | `fetch_deals.py:197`, через `fetch_leads.load_lead_fields_meta` | Контракт метаданных согласован |
 | [crm.stagehistory.list](https://apidocs.bitrix24.ru/api-reference/crm/crm-stage-history-list.html) | `fetch_deals.py:311` | `entityTypeId=1/2`, `OWNER_ID`, поля и извлечение `result.items` согласованы |
-| [crm.activity.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-list.html) | `fetch_activities.py:80,206` | Параметры выборки дел согласованы; `FILES` запрашивается явно, добор через `get` условный |
-| [crm.activity.get](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-get.html) | `fetch_activities.py:108`, `scripts/diag_download.py:109` | `id` корректен; FILES относится к Диску, WebDAV-вложения не поддержаны |
-| [crm.activity.call.getTranscript](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-call-get-transcript.html) | `fetch_activities.py:124` | `activityId` корректен, поле текста читается неверно |
-| [crm.timeline.comment.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/comments/crm-timeline-comment-list.html) | `fetch_activities.py:239` | Обязательные `ENTITY_ID/ENTITY_TYPE`, поля, сортировка и стандартная пагинация согласованы; вложения не нормализуются |
+| [crm.activity.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-list.html) | `fetch_activities.py:80,185` | Параметры выборки дел согласованы; `FILES` запрашивается явно, добор через `get` условный |
+| [crm.activity.get](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-get.html) | `fetch_activities.py:107`, `scripts/diag_download.py:109` | `id` корректен; FILES относится к Диску, WebDAV-вложения не поддержаны |
+| [crm.timeline.comment.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/comments/crm-timeline-comment-list.html) | `fetch_activities.py:218` | Обязательные `ENTITY_ID/ENTITY_TYPE`, поля, сортировка и стандартная пагинация согласованы; вложения не нормализуются |
 | [imopenlines.crm.chat.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/chats/imopenlines-crm-chat-get.html) | `fetch_openlines.py:51` | Тип сущности, ID, `ACTIVE_ONLY=N` и массив привязок согласованы |
 | [imopenlines.session.history.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/sessions/imopenlines-session-history-get.html) | `fetch_openlines.py:99` | `CHAT_ID` допустим, но охват ограничен последней сессией и одной страницей |
 | [im.dialog.messages.get](https://apidocs.bitrix24.ru/api-reference/chats/messages/im-dialog-messages-get.html) | `fetch_openlines.py:145` | Формат `chat<ID>` допустим; ошибки лимита, курсора и полноты описаны ниже |
@@ -85,18 +86,6 @@
 Предложение: допустимый лимит, числовые min/max ID, обход необходимых
 направлений, дедупликация, защита от повторного курсора и явный статус
 частичной истории. Лимит страниц должен сообщать об усечении результата.
-
-### P1. Готовая штатная расшифровка не распознаётся
-
-В `get_builtin_transcript` (`fetch_activities.py:133`) читаются `TRANSCRIPT`
-и `transcript`, но документированный ответ — `result.transcription`.
-Из-за этого `sync.resolve_transcript` может передать запись на платную внешнюю
-транскрибацию либо оставить её без текста, хотя штатный текст уже есть.
-[Контракт расшифровки](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-call-get-transcript.html).
-
-Исправление: читать `transcription`, сохранив обработку `null`. Сейчас
-`PREFER_BUILTIN_TRANSCRIPT=False` в рабочем `config.py`, поэтому ошибка
-проявится при включении этой возможности.
 
 ### P2. Повторы не учитывают ресурсную блокировку метода
 
@@ -199,7 +188,7 @@ scope/прав может выглядеть как отсутствие кас�
 
 ## Рекомендуемый порядок работ и проверки
 
-Сначала исправить полноту чатов, курсоры IM и разбор штатной расшифровки.
+Сначала исправить полноту чатов и курсоры IM.
 Затем обработку HTTP/ресурсных лимитов, статусы недоступных источников,
 отрицательные кэши и одинаковую семантику фильтров. После этого сокращать
 запросы по измерениям: ранний лимит, общие справочники, batch и обход по ID.
@@ -207,7 +196,7 @@ scope/прав может выглядеть как отсутствие кас�
 
 Для будущих исправлений нужны изолированные сценарии: несколько страниц
 и сессий чата; первая страница с непрочитанными; сообщения в разном порядке;
-дубликаты и повтор курсора; достижение лимита страниц; `transcription/null`;
+дубликаты и повтор курсора; достижение лимита страниц;
 HTTP 429 с `OPERATION_TIME_LIMIT`, 503 с `QUERY_LIMIT_EXCEEDED`, 502 с JSON
 без `error`; один и несколько ID с теми же датами/статусами; временный сбой
 справочника и последующее восстановление. Для оптимизаций дополнительно

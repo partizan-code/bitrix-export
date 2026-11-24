@@ -27,6 +27,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 
 import config
 import export_llm
@@ -42,6 +43,7 @@ import store
 import transcribe
 from api_client import B24Client, BitrixError
 from logging_setup import log, run_cli
+from performance import measure, profile_run, timed
 from users import (
     ContactBook,
     LazyUserMap,
@@ -107,18 +109,11 @@ def _progress(**kw):
 
 # ---------------------------------------------------------------- транскрипция одного звонка
 def resolve_transcript(client, deal_id, call):
-    """Возвращает {'text': str|None, 'status': ...} для звонка."""
+    """Получает транскрипцию звонка через AssemblyAI и возвращает текст/статус."""
     has_recording = bool(call.get("recording_url") or call.get("file_ids"))
-    # 1) штатная расшифровка Bitrix (CoPilot)
-    if config.PREFER_BUILTIN_TRANSCRIPT:
-        text = fetch_activities.get_builtin_transcript(client, call.get("activity_id"))
-        if text:
-            return {"text": text, "status": "builtin"}
-
     if not has_recording:
         return {"text": None, "status": "no_recording"}
 
-    # 2) внешняя транскрибация через AssemblyAI
     if config.TRANSCRIBE_ENABLED:
         txt_path = transcribe.transcribe_call(client, deal_id, call)
         if txt_path:
@@ -130,6 +125,7 @@ def resolve_transcript(client, deal_id, call):
 
 
 # ---------------------------------------------------------------- одна сущность (сделка/лид)
+@timed("stage.process_entity")
 def process_entity(
     client,
     deal,
@@ -152,131 +148,144 @@ def process_entity(
     else:
         deal["_contact_name"] = contacts.name(deal.get("CONTACT_ID"))
 
-    # --- история стадий/статусов
-    history = fetch_deals.get_stage_history(client, did, entity_type_id=owner_type)
-    raw["stage_history"] = history
-    touchpoints += normalize.tp_stage_events(deal, history, stages_map)
+    with measure("source.stage_history"):
+        # --- история стадий/статусов
+        history = fetch_deals.get_stage_history(client, did, entity_type_id=owner_type)
+        raw["stage_history"] = history
+        touchpoints += normalize.tp_stage_events(deal, history, stages_map)
 
-    # --- звонки
-    calls_raw = fetch_activities.get_deal_calls(
-        client, did, date_from=config.DATE_FROM, owner_type=owner_type
-    )
-    calls = [fetch_activities.normalize_call(r) for r in calls_raw]
-    raw["calls"] = calls
-    for call in calls:
-        # Скачивание записи нужно только если: есть file_ids, транскрипции
-        # ещё нет в кэше И не работает прямой режим AssemblyAI
-        # (при ASSEMBLYAI_DIRECT_URL запись забирает сам AssemblyAI).
-        if (
-            config.DOWNLOAD_RECORDINGS
-            and call.get("file_ids")
-            and not transcribe.use_assemblyai_direct()
-            and not transcribe.has_transcript(did, call)
-        ):
-            call["local_audio"] = transcribe.download_call_recording(client, did, call)
-        tr = resolve_transcript(client, did, call)
-        touchpoints.append(
-            normalize.tp_from_call(deal, call, users_map, history, stages_map, tr)
+    with measure("source.calls"):
+        # --- звонки
+        calls_raw = fetch_activities.get_deal_calls(
+            client, did, date_from=config.DATE_FROM, owner_type=owner_type
         )
-
-    # --- чаты открытых линий
-    chats = fetch_openlines.get_deal_chats(client, did, entity_type=entity)
-    raw["ol_chats"] = []
-    for chat in chats:
-        messages, users_info = fetch_openlines.get_chat_history(client, chat["chat_id"])
-        raw["ol_chats"].append({"chat": chat, "messages": messages})
-        for msg in messages:
-            if not msg.get("text") or fetch_openlines.is_system_message(msg):
-                continue
-            sender = fetch_openlines.classify_sender(
-                msg["sender_id"], users_map, users_info, deal["_contact_name"]
-            )
-            touchpoints.append(
-                normalize.tp_from_ol_message(
-                    deal, chat, msg, sender, history, stages_map
+        calls = [fetch_activities.normalize_call(r) for r in calls_raw]
+        raw["calls"] = calls
+        for call in calls:
+            # Скачивание записи нужно только если: есть file_ids, транскрипции
+            # ещё нет в кэше И не работает прямой режим AssemblyAI
+            # (при ASSEMBLYAI_DIRECT_URL запись забирает сам AssemblyAI).
+            if (
+                config.DOWNLOAD_RECORDINGS
+                and call.get("file_ids")
+                and not transcribe.use_assemblyai_direct()
+                and not transcribe.has_transcript(did, call)
+            ):
+                call["local_audio"] = transcribe.download_call_recording(
+                    client, did, call
                 )
+            tr = resolve_transcript(client, did, call)
+            touchpoints.append(
+                normalize.tp_from_call(deal, call, users_map, history, stages_map, tr)
             )
 
-    # --- комментарии таймлайна
-    if config.INCLUDE_COMMENTS:
-        comments = fetch_activities.get_timeline_comments(
-            client, did, entity_type=entity
-        )
-        raw["comments"] = comments
-        for row in comments:
-            touchpoints.append(
-                normalize.tp_from_comment(deal, row, users_map, history, stages_map)
+    with measure("source.chats"):
+        # --- чаты открытых линий
+        chats = fetch_openlines.get_deal_chats(client, did, entity_type=entity)
+        raw["ol_chats"] = []
+        for chat in chats:
+            messages, users_info = fetch_openlines.get_chat_history(
+                client, chat["chat_id"]
             )
-
-    # --- задачи по сущности
-    tasks = []
-    if config.INCLUDE_TASKS:
-        tasks = fetch_tasks.get_deal_tasks(client, did, prefix=ep["task_prefix"])
-        raw["tasks"] = tasks
-        for t in tasks:
-            touchpoints.append(
-                normalize.tp_from_task(
-                    deal, t, users_map, history, stages_map, fetch_tasks.task_field
+            raw["ol_chats"].append({"chat": chat, "messages": messages})
+            for msg in messages:
+                if not msg.get("text") or fetch_openlines.is_system_message(msg):
+                    continue
+                sender = fetch_openlines.classify_sender(
+                    msg["sender_id"], users_map, users_info, deal["_contact_name"]
                 )
-            )
+                touchpoints.append(
+                    normalize.tp_from_ol_message(
+                        deal, chat, msg, sender, history, stages_map
+                    )
+                )
 
-    # --- письма / встречи
-    type_ids = []
-    if config.INCLUDE_EMAILS:
-        type_ids.append(3)
-    if config.INCLUDE_MEETINGS:
-        type_ids.append(1)
-    if type_ids:
-        acts = fetch_activities.get_activities(
-            client, did, type_ids, owner_type=owner_type
+    with measure("source.comments"):
+        # --- комментарии таймлайна
+        if config.INCLUDE_COMMENTS:
+            comments = fetch_activities.get_timeline_comments(
+                client, did, entity_type=entity
+            )
+            raw["comments"] = comments
+            for row in comments:
+                touchpoints.append(
+                    normalize.tp_from_comment(deal, row, users_map, history, stages_map)
+                )
+
+    with measure("source.tasks"):
+        # --- задачи по сущности
+        tasks = []
+        if config.INCLUDE_TASKS:
+            tasks = fetch_tasks.get_deal_tasks(client, did, prefix=ep["task_prefix"])
+            raw["tasks"] = tasks
+            for t in tasks:
+                touchpoints.append(
+                    normalize.tp_from_task(
+                        deal, t, users_map, history, stages_map, fetch_tasks.task_field
+                    )
+                )
+
+    with measure("source.activities"):
+        # --- письма / встречи
+        type_ids = []
+        if config.INCLUDE_EMAILS:
+            type_ids.append(3)
+        if config.INCLUDE_MEETINGS:
+            type_ids.append(1)
+        if type_ids:
+            acts = fetch_activities.get_activities(
+                client, did, type_ids, owner_type=owner_type
+            )
+            raw["activities"] = acts
+            for act in acts:
+                touchpoints.append(
+                    normalize.tp_from_activity(
+                        deal, act, users_map, history, stages_map
+                    )
+                )
+
+    with measure("stage.entity_artifacts"):
+        # --- сырой слепок
+        raw_path = os.path.join(config.RAW_DIR, f"{entity}_{did}.json")
+        with open(raw_path, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
+
+        # --- markdown-протокол
+        md_path = export_llm.write_deal_markdown(
+            deal,
+            touchpoints,
+            users_map,
+            stages_map,
+            group=group,
+            ctx=ctx,
+            pipeline_map=pipeline_map,
+            entity=entity,
         )
-        raw["activities"] = acts
-        for act in acts:
-            touchpoints.append(
-                normalize.tp_from_activity(deal, act, users_map, history, stages_map)
-            )
 
-    # --- сырой слепок
-    raw_path = os.path.join(config.RAW_DIR, f"{entity}_{did}.json")
-    with open(raw_path, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
-
-    # --- markdown-протокол
-    md_path = export_llm.write_deal_markdown(
-        deal,
-        touchpoints,
-        users_map,
-        stages_map,
-        group=group,
-        ctx=ctx,
-        pipeline_map=pipeline_map,
-        entity=entity,
-    )
-
-    id_key = "lead_id" if entity == "lead" else "deal_id"
-    stats = {
-        id_key: did,
-        "entity": entity,
-        "title": deal.get("TITLE"),
-        "date_create": deal.get("DATE_CREATE"),
-        "date_modify": deal.get("DATE_MODIFY"),
-        "responsible": deal.get("ASSIGNED_BY_ID"),
-        "contact": deal.get("_contact_name"),
-        "source": deal.get("_source"),
-        "country": deal.get("_country"),
-        "stage": stages_map.get(
-            deal.get(ep["stage_field"]), deal.get(ep["stage_field"])
-        ),
-        "closed": ep["is_closed"](deal),
-        "group": group,
-        "touchpoints": len(touchpoints),
-        "calls": len(calls),
-        "ol_chats": len(chats),
-        "tasks": len(tasks),
-        "fields": deal.get("_fields") or {},
-    }
-    # артефакты — в постоянное хранилище (для кумулятивных снимков)
-    store.save_deal(deal, md_path, touchpoints, stats, entity=entity)
+        id_key = "lead_id" if entity == "lead" else "deal_id"
+        stats = {
+            id_key: did,
+            "entity": entity,
+            "title": deal.get("TITLE"),
+            "date_create": deal.get("DATE_CREATE"),
+            "date_modify": deal.get("DATE_MODIFY"),
+            "responsible": deal.get("ASSIGNED_BY_ID"),
+            "contact": deal.get("_contact_name"),
+            "source": deal.get("_source"),
+            "country": deal.get("_country"),
+            "stage": stages_map.get(
+                deal.get(ep["stage_field"]), deal.get(ep["stage_field"])
+            ),
+            "closed": ep["is_closed"](deal),
+            "group": group,
+            "touchpoints": len(touchpoints),
+            "calls": len(calls),
+            "ol_chats": len(chats),
+            "tasks": len(tasks),
+            "fields": deal.get("_fields") or {},
+        }
+        # артефакты — в постоянное хранилище (для кумулятивных снимков)
+        store.save_deal(deal, md_path, touchpoints, stats, entity=entity)
     return touchpoints, stats
 
 
@@ -321,25 +330,30 @@ def run_entity(
         reused=0,
         errors=0,
     )
-    if export_type == "incremental":
-        deals = ep["fetch_inc"](client, changed_since_iso)
-        fetched_count = len(deals)
-        # повтор сущностей, упавших с ошибкой в прошлый запуск, —
-        # иначе они навсегда выпали бы из кумулятивных архивов
-        have = {int(d["ID"]) for d in deals}
-        prev_errors = prev_state.get("errors") or {}
-        if isinstance(prev_errors, list):  # старый формат — это сделки
-            prev_errors = {"deals": prev_errors}
-        retry = [
-            int(i) for i in (prev_errors.get(f"{entity}s") or []) if int(i) not in have
-        ]
-        if retry:
-            log.info("{}: повторяю с ошибкой прошлого запуска: {}", title, len(retry))
-            deals += ep["fetch_ids"](client, retry)
-            deals.sort(key=lambda d: int(d["ID"]))
-    else:
-        deals = ep["fetch"](client)
-        fetched_count = len(deals)
+    with measure("stage.selection"):
+        if export_type == "incremental":
+            deals = ep["fetch_inc"](client, changed_since_iso)
+            fetched_count = len(deals)
+            # повтор сущностей, упавших с ошибкой в прошлый запуск, —
+            # иначе они навсегда выпали бы из кумулятивных архивов
+            have = {int(d["ID"]) for d in deals}
+            prev_errors = prev_state.get("errors") or {}
+            if isinstance(prev_errors, list):  # старый формат — это сделки
+                prev_errors = {"deals": prev_errors}
+            retry = [
+                int(i)
+                for i in (prev_errors.get(f"{entity}s") or [])
+                if int(i) not in have
+            ]
+            if retry:
+                log.info(
+                    "{}: повторяю с ошибкой прошлого запуска: {}", title, len(retry)
+                )
+                deals += ep["fetch_ids"](client, retry)
+                deals.sort(key=lambda d: int(d["ID"]))
+        else:
+            deals = ep["fetch"](client)
+            fetched_count = len(deals)
 
     # --- реестр + store: кумулятивный снимок.
     # Закрытые/технические, выгруженные ранее и не изменившиеся,
@@ -569,7 +583,9 @@ def run_entity(
 
 
 # ---------------------------------------------------------------- main
+@profile_run
 def main():
+    t0 = perf_counter()
     if len(sys.argv) > 1:
         raise SystemExit(
             "sync.py не принимает аргументы. Задайте параметры в config.py "
@@ -590,67 +606,68 @@ def main():
             "(задайте LEAD_IDS/LEADS_LIMIT в config.py для теста лидов)"
         )
 
-    client = B24Client()
-    me = client.ping()
-    log.info("Подключено к Bitrix24: user_id={}", me.get("ID"))
+    with measure("stage.reference_books"):
+        client = B24Client()
+        me = client.ping()
+        log.info("Подключено к Bitrix24: user_id={}", me.get("ID"))
 
-    log.info("Загружаю справочники (пользователи, стадии, статусы)...")
-    # LazyUserMap: неизвестные ID (уволенные/боты) дозапрашиваются точечно
-    users_map = LazyUserMap(client, load_users(client))
-    stages_map = load_stages(client)
-    contacts = ContactBook(client)
-    lead_statuses = {}
-    if leads_enabled:
-        try:
-            lead_statuses = load_lead_statuses(client)
-        except Exception as e:  # noqa: BLE001 — необязательный справочник не останавливает выгрузку
-            log.warning("Статусы лидов не получены: {}", e)
-    log.info(
-        "Пользователей: {}, стадий сделок: {}, статусов лидов: {}",
-        len(users_map),
-        len(stages_map),
-        len(lead_statuses),
-    )
-
-    # справочник источников CRM (SOURCE_ID -> название)
-    try:
-        source_map = load_sources(client)
-        log.info("Источников в справочнике: {}", len(source_map))
-    except Exception as e:  # noqa: BLE001 — необязательный справочник не останавливает выгрузку
-        log.warning("Справочник источников не получен: {}", e)
-        source_map = {}
-
-    # метаданные полей (названия, enum-варианты)
-    try:
-        fields_meta = fetch_deals.load_deal_fields_meta(client)
+        log.info("Загружаю справочники (пользователи, стадии, статусы)...")
+        # LazyUserMap: неизвестные ID (уволенные/боты) дозапрашиваются точечно
+        users_map = LazyUserMap(client, load_users(client))
+        stages_map = load_stages(client)
+        contacts = ContactBook(client)
+        lead_statuses = {}
+        if leads_enabled:
+            try:
+                lead_statuses = load_lead_statuses(client)
+            except Exception as e:  # noqa: BLE001 — необязательный справочник не останавливает выгрузку
+                log.warning("Статусы лидов не получены: {}", e)
         log.info(
-            "Метаданные полей сделки: {} (UF: {})",
-            len(fields_meta),
-            sum(1 for k in fields_meta if k.startswith("UF_")),
+            "Пользователей: {}, стадий сделок: {}, статусов лидов: {}",
+            len(users_map),
+            len(stages_map),
+            len(lead_statuses),
         )
-    except Exception as e:  # noqa: BLE001 — необязательные метаданные не останавливают выгрузку
-        log.warning("Метаданные полей сделки не получены: {}", e)
-        fields_meta = {}
-    lead_fields_meta = {}
-    if leads_enabled:
+
+        # справочник источников CRM (SOURCE_ID -> название)
         try:
-            lead_fields_meta = fetch_leads.load_lead_fields_meta(client)
+            source_map = load_sources(client)
+            log.info("Источников в справочнике: {}", len(source_map))
+        except Exception as e:  # noqa: BLE001 — необязательный справочник не останавливает выгрузку
+            log.warning("Справочник источников не получен: {}", e)
+            source_map = {}
+
+        # метаданные полей (названия, enum-варианты)
+        try:
+            fields_meta = fetch_deals.load_deal_fields_meta(client)
             log.info(
-                "Метаданные полей лида: {} (UF: {})",
-                len(lead_fields_meta),
-                sum(1 for k in lead_fields_meta if k.startswith("UF_")),
+                "Метаданные полей сделки: {} (UF: {})",
+                len(fields_meta),
+                sum(1 for k in fields_meta if k.startswith("UF_")),
             )
         except Exception as e:  # noqa: BLE001 — необязательные метаданные не останавливают выгрузку
-            log.warning("Метаданные полей лида не получены: {}", e)
+            log.warning("Метаданные полей сделки не получены: {}", e)
+            fields_meta = {}
+        lead_fields_meta = {}
+        if leads_enabled:
+            try:
+                lead_fields_meta = fetch_leads.load_lead_fields_meta(client)
+                log.info(
+                    "Метаданные полей лида: {} (UF: {})",
+                    len(lead_fields_meta),
+                    sum(1 for k in lead_fields_meta if k.startswith("UF_")),
+                )
+            except Exception as e:  # noqa: BLE001 — необязательные метаданные не останавливают выгрузку
+                log.warning("Метаданные полей лида не получены: {}", e)
 
-    # справочники для crm_status-полей (Тип, Стадия, Источник) и воронок
-    status_maps = {"DEAL_STAGE": stages_map, "SOURCE": source_map}
-    category_map = {}
-    try:
-        status_maps["DEAL_TYPE"] = load_status_book(client, "DEAL_TYPE")
-        category_map = load_categories(client)
-    except Exception as e:  # noqa: BLE001 — необязательные справочники не останавливают выгрузку
-        log.warning("Справочники типов/воронок не получены: {}", e)
+        # справочники для crm_status-полей (Тип, Стадия, Источник) и воронок
+        status_maps = {"DEAL_STAGE": stages_map, "SOURCE": source_map}
+        category_map = {}
+        try:
+            status_maps["DEAL_TYPE"] = load_status_book(client, "DEAL_TYPE")
+            category_map = load_categories(client)
+        except Exception as e:  # noqa: BLE001 — необязательные справочники не останавливают выгрузку
+            log.warning("Справочники типов/воронок не получены: {}", e)
 
     # --- предыдущий снимок -> режим выгрузки (full / incremental)
     prev_state = {}
@@ -731,21 +748,10 @@ def main():
         overlap_from.isoformat(timespec="seconds") if overlap_from else None
     )
 
-    t0 = time.time()
     results = {}
-    results["deals"] = run_entity(
-        "deal",
-        client,
-        ctx,
-        books,
-        prev_state,
-        export_type,
-        is_test_run,
-        changed_since_iso,
-    )
-    if leads_enabled:
-        results["leads"] = run_entity(
-            "lead",
+    with measure("stage.deals"):
+        results["deals"] = run_entity(
+            "deal",
             client,
             ctx,
             books,
@@ -754,6 +760,18 @@ def main():
             is_test_run,
             changed_since_iso,
         )
+    if leads_enabled:
+        with measure("stage.leads"):
+            results["leads"] = run_entity(
+                "lead",
+                client,
+                ctx,
+                books,
+                prev_state,
+                export_type,
+                is_test_run,
+                changed_since_iso,
+            )
     else:
         results["leads"] = {
             "groups": {g: {"tps": [], "index": []} for g in export_llm.ALL_GROUPS},
@@ -844,16 +862,18 @@ def main():
 
     zpath = None
     if config.MAKE_SNAPSHOT_ZIP and (total_deals or total_leads):
-        zpath = export_llm.make_snapshot_zip(ctx)
+        with measure("stage.zip"):
+            zpath = export_llm.make_snapshot_zip(ctx)
         log.info("Архив снимка: {}", zpath)
 
     sqlite_result = {}
     if zpath and getattr(config, "SNAPSHOT_SQLITE_ENABLED", False):
         _progress(entity=None, stage="sqlite", deals=total_deals, leads=total_leads)
         try:
-            imported = snapshot_sqlite.import_snapshot(
-                Path(zpath), Path(config.SNAPSHOT_SQLITE_PATH)
-            )
+            with measure("stage.sqlite"):
+                imported = snapshot_sqlite.import_snapshot(
+                    Path(zpath), Path(config.SNAPSHOT_SQLITE_PATH)
+                )
         except Exception as error:  # noqa: BLE001 — ZIP сохранён, состояние выгрузки нужно завершить
             sqlite_result = {
                 "sqlite_status": "error",
@@ -915,7 +935,7 @@ def main():
     log.info(
         "Готово за {:.1f} мин: сделок {}, лидов {}, касаний {} "
         "(пропущено: {}, ошибок: {})",
-        (time.time() - t0) / 60,
+        (perf_counter() - t0) / 60,
         total_deals,
         total_leads,
         total_tps,

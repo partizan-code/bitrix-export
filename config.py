@@ -139,7 +139,6 @@ MIN_RECORDING_DURATION_SEC = 15  # запись нужна при длитель
 # Транскрибация может скачивать записи независимо от DOWNLOAD_RECORDINGS.
 DOWNLOAD_RECORDINGS = True  # скачивать записи в audio/
 TRANSCRIBE_ENABLED = True  # транскрибация через AssemblyAI
-PREFER_BUILTIN_TRANSCRIPT = False  # сначала Bitrix AI, независимо от TRANSCRIBE_ENABLED
 
 # AssemblyAI: ключ из окружения или .env.
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "")
@@ -152,7 +151,7 @@ ASSEMBLYAI_TIMEOUT = 900  # ожидание результата, с
 ASSEMBLYAI_DIRECT_URL = False
 
 # Сеть
-REQUEST_PAUSE = 0.55  # пауза между запросами к Bitrix24, с
+REQUEST_PAUSE = 0.2  # пауза между запросами к Bitrix24, с
 MAX_RETRIES = 5  # максимум попыток запроса к Bitrix24
 REQUEST_TIMEOUT = 60  # тайм-аут HTTP-запроса, с
 

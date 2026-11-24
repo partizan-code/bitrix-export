@@ -34,6 +34,7 @@ ISO = "2026-11-23T12:00:00+03:00"
 PROJECT_MODULES = (
     "config",
     "logging_setup",
+    "performance",
     "api_client",
     "export_llm",
     "fetch_activities",
@@ -143,7 +144,6 @@ def make_config(root):
         "DOWNLOAD_RECORDINGS": False,
         "MIN_RECORDING_DURATION_SEC": 15,
         "TRANSCRIBE_ENABLED": True,
-        "PREFER_BUILTIN_TRANSCRIPT": True,
         "ASSEMBLYAI_DIRECT_URL": True,
         "ASSEMBLYAI_API_KEY": "synthetic",
         "ASSEMBLYAI_LANGUAGE": "ru",
@@ -358,8 +358,6 @@ class FakeClient:
                 }
                 for t in params["filter"]["@TYPE_ID"]
             ]
-        if method == "crm.activity.call.getTranscript":
-            return {"transcript": "Здравствуйте, синтетический разговор."}
         if method == "crm.timeline.comment.list":
             return [
                 {
@@ -467,7 +465,14 @@ class ExportTests(unittest.TestCase):
             SANDBOX = None
 
     def run_sync(self):
-        with patch.object(sys, "argv", ["sync.py"]):
+        with (
+            patch.object(sys, "argv", ["sync.py"]),
+            patch.object(
+                self.sync.transcribe,
+                "_transcribe_assemblyai_direct",
+                return_value="Здравствуйте, синтетический разговор.",
+            ),
+        ):
             self.sync.main()
         return self.read_json("export/snapshot/manifest.json")
 
@@ -582,7 +587,7 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(call["actor"]["user_id"], 17)
             self.assertEqual(call["responsible_user_id"], 42)
             self.assertEqual(call["deal_stage_at_time"]["stage_id"], "NEW")
-            self.assertEqual(call["content"]["transcript_status"], "builtin")
+            self.assertEqual(call["content"]["transcript_status"], "assemblyai")
             self.assertEqual(len([t for t in tps if t["event_type"] == "message"]), 1)
             md = self.sync.store.load_md(1, entity=entity)
             country = "RB" if entity == "deal" else "UNKNOWN"
@@ -607,7 +612,7 @@ class ExportTests(unittest.TestCase):
         # Имена и export_id используют штатные форматы времени вместо общего STAMP.
         self.assertEqual(
             self.digest(),
-            "4ed230845d89609f63483231a3adb69567d106cf670e89192b9e7cb48818ad07",
+            "b84d51594c2e7a6dbdf2d87965403006226333871832ede4ba1a3ab4fcdd3e24",
         )
 
     def test_snapshot_sqlite_imports_final_zip(self):
@@ -664,7 +669,7 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(all(p["filter"]["OWNER_ID"] == 1 for p in calls))
         self.assertEqual(
             self.digest(),
-            "fc9b37f5f3f16e141b50ae663734e59318850858dfb509bef6a5c2f662f94af7",
+            "4d58c8d153b3805f24eade12f01238e5fe45c94be788eb6af05d652d6fe565f4",
         )
 
     def test_country_uses_category_or_source_and_preserves_crm_fields(self):
@@ -987,7 +992,7 @@ class ExportTests(unittest.TestCase):
             for p in ("data/state.json", "data/registry.json")
         }
         self.cfg.DEALS_LIMIT = self.cfg.LEADS_LIMIT = 1
-        self.cfg.TRANSCRIBE_ENABLED = self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
+        self.cfg.TRANSCRIBE_ENABLED = False
         manifest = self.run_sync()
         self.assertEqual(manifest["update_mode"], "FULL")
         self.assertEqual(manifest["deals"]["total"], 1)
@@ -1004,7 +1009,7 @@ class ExportTests(unittest.TestCase):
 
     def test_deal_ids_skip_leads_without_explicit_lead_limit(self):
         self.cfg.DEAL_IDS = [1]
-        self.cfg.TRANSCRIBE_ENABLED = self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
+        self.cfg.TRANSCRIBE_ENABLED = False
         manifest = self.run_sync()
         self.assertEqual(manifest["deals"]["total"], 1)
         self.assertEqual(manifest["leads"]["total"], 0)
@@ -1022,7 +1027,7 @@ class ExportTests(unittest.TestCase):
         self.assertFalse((self.root / "data/state.json").exists())
         self.assertFalse((self.root / "data/registry.json").exists())
 
-    def test_config_disables_external_transcription_and_preserves_builtin(self):
+    def test_config_disables_transcription(self):
         self.cfg.DEAL_IDS = [1]
         self.cfg.TRANSCRIBE_ENABLED = False
         with patch.object(self.sync.transcribe, "transcribe_call") as external:
@@ -1030,13 +1035,8 @@ class ExportTests(unittest.TestCase):
             call = next(
                 t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
             )
-            self.assertEqual(call["content"]["transcript_status"], "builtin")
-            self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
-            self.run_sync()
-            call = next(
-                t for t in self.sync.store.load_tps(1) if t["event_type"] == "call"
-            )
             self.assertEqual(call["content"]["transcript_status"], "pending")
+            self.assertEqual(call["content"]["text"], "")
             external.assert_not_called()
 
     def test_disabled_groups_and_sources(self):
@@ -1158,7 +1158,6 @@ class ExportTests(unittest.TestCase):
                 self.assertTrue((self.root / "export/snapshot" / ent / group).is_dir())
 
     def test_transcript_missing_recording_disabled_and_failed(self):
-        self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
         self.assertEqual(
             self.sync.resolve_transcript(self.client, 1, {}),
             {"text": None, "status": "no_recording"},
@@ -1201,12 +1200,9 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(set(recovered), set(json.loads(before["data/registry.json"])))
         self.assertEqual(recovered["lead:2"]["exported_at"], "RECOVERED_FROM_STORE")
 
-    def test_transcript_settings_builtin_cache_and_assemblyai(self):
+    def test_transcript_settings_cache_and_assemblyai(self):
         call = {"activity_id": "91", "file_ids": [501]}
         self.cfg.TRANSCRIBE_ENABLED = False
-        builtin = self.sync.resolve_transcript(self.client, 1, call)
-        self.assertEqual(builtin["status"], "builtin")
-        self.cfg.PREFER_BUILTIN_TRANSCRIPT = False
         self.assertEqual(
             self.sync.resolve_transcript(self.client, 1, call)["status"],
             "pending",
@@ -1225,6 +1221,7 @@ class ExportTests(unittest.TestCase):
             )
             self.sync.resolve_transcript(self.client, 1, call)
             mocked.assert_called_once()
+        self.assertFalse(self.client.trace)
 
     def test_direct_transcript_falls_back_to_file_upload(self):
         call = {"activity_id": "92", "file_ids": [501]}
@@ -1397,6 +1394,170 @@ class ExportTests(unittest.TestCase):
             self.assertRaisesRegex(api.BitrixError, "RETRIES_EXCEEDED"),
         ):
             client.call("list")
+
+    def test_profile_timing_failure_and_run_isolation(self):
+        performance = importlib.import_module("performance")
+        failure = RuntimeError("synthetic")
+
+        @performance.profile_run
+        def failed():
+            with performance.measure("outer"), performance.measure("inner"):
+                performance.count("attempts")
+                raise failure
+
+        with (
+            patch.object(performance.RunMetrics, "report", autospec=True) as report,
+            patch.object(performance, "perf_counter", side_effect=[0, 1, 2, 5, 8, 10]),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            failed()
+        self.assertIs(raised.exception, failure)
+        metrics, elapsed, completed = report.call_args.args
+        self.assertEqual((elapsed, completed), (10, False))
+        self.assertEqual(
+            metrics.timings["inner"], {"calls": 1, "errors": 1, "seconds": 3}
+        )
+        self.assertEqual(
+            metrics.timings["outer"], {"calls": 1, "errors": 1, "seconds": 7}
+        )
+        self.assertEqual(metrics.counters, {"attempts": 1})
+        performance.count("outside")
+        with performance.measure("outside"):
+            pass
+        self.assertEqual(metrics.counters, {"attempts": 1})
+        self.assertNotIn("outside", metrics.timings)
+        with patch.object(performance.RunMetrics, "report", autospec=True) as report:
+            self.assertEqual(performance.profile_run(lambda: 42)(), 42)
+        fresh, _, completed = report.call_args.args
+        self.assertTrue(completed)
+        self.assertEqual(fresh.timings, {})
+        self.assertEqual(fresh.counters, {})
+
+    def test_api_profile_distinguishes_calls_attempts_and_delays(self):
+        api = importlib.import_module("api_client")
+        performance = importlib.import_module("performance")
+        client = api.B24Client()
+        self.addCleanup(client.session.close)
+        limited = Mock(status_code=429)
+        ok = Mock(status_code=200)
+        ok.json.return_value = {"result": [1]}
+        with (
+            patch.object(performance.RunMetrics, "report", autospec=True) as report,
+            patch.object(
+                client.session,
+                "post",
+                side_effect=[
+                    limited,
+                    requests.ConnectionError("synthetic"),
+                    ok,
+                ],
+            ),
+        ):
+            self.assertEqual(
+                performance.profile_run(lambda: client.result("list"))(), [1]
+            )
+        metrics = report.call_args.args[0]
+        self.assertEqual(metrics.timings["bitrix.call.list"]["calls"], 1)
+        self.assertEqual(metrics.timings["bitrix.call.list"]["errors"], 0)
+        self.assertEqual(metrics.timings["bitrix.http.list"]["calls"], 3)
+        self.assertEqual(metrics.timings["bitrix.http.list"]["errors"], 1)
+        self.assertEqual(metrics.timings["bitrix.backoff.list"]["calls"], 2)
+        self.assertEqual(metrics.timings["bitrix.pause.list"]["calls"], 1)
+        self.assertEqual(metrics.counters["bitrix.retry.list"], 2)
+        self.assertEqual(metrics.counters["bitrix.http_429.list"], 1)
+        self.assertEqual(metrics.counters["bitrix.network_error.list"], 1)
+        with (
+            patch.object(performance.RunMetrics, "report", autospec=True) as report,
+            patch.object(client.session, "post", return_value=limited),
+            self.assertRaises(api.BitrixError),
+        ):
+            performance.profile_run(lambda: client.call("list"))()
+        metrics = report.call_args.args[0]
+        self.assertEqual(metrics.timings["bitrix.call.list"]["errors"], 1)
+        self.assertEqual(metrics.counters["bitrix.retry.list"], 2)
+        self.assertEqual(metrics.counters["bitrix.http_429.list"], 3)
+
+    def test_profile_stages_and_audio_cache_without_sensitive_data(self):
+        performance = importlib.import_module("performance")
+        output = io.StringIO()
+        sink = logger.add(output, format="{message}")
+        self.addCleanup(logger.remove, sink)
+        self.run_sync()
+        profile = output.getvalue().split("Профиль выгрузки:", 1)[1]
+        for name in (
+            "stage.reference_books",
+            "stage.selection",
+            "stage.deals",
+            "stage.leads",
+            "source.calls",
+            "source.chats",
+            "stage.zip",
+            "stage.entity_artifacts",
+        ):
+            self.assertIn(name, profile)
+        self.assertNotIn("https://", profile)
+        self.assertNotIn("Пример", profile)
+        self.assertNotIn("Здравствуйте", profile)
+
+        call = {"activity_id": "91", "file_ids": [501]}
+        path = Path(self.sync.transcribe.transcript_path(1, call))
+        path.write_text("Секретный текст", encoding="utf-8")
+        with (
+            patch.object(performance.RunMetrics, "report", autospec=True) as report,
+            patch.object(requests, "post") as post,
+            patch.object(requests, "get") as get,
+        ):
+            result = performance.profile_run(
+                lambda: self.sync.transcribe.transcribe_call(self.client, 1, call)
+            )()
+        self.assertEqual(result, str(path))
+        post.assert_not_called()
+        get.assert_not_called()
+        self.assertEqual(
+            report.call_args.args[0].counters, {"audio.transcript_cache_hit": 1}
+        )
+
+    def test_audio_profile_counts_polling_and_preserves_errors(self):
+        performance = importlib.import_module("performance")
+        transcribe = self.sync.transcribe
+        submitted = Mock()
+        submitted.json.return_value = {"id": "synthetic-job"}
+        pending = Mock()
+        pending.json.return_value = {"status": "processing"}
+        completed = Mock()
+        completed.json.return_value = {
+            "status": "completed",
+            "text": "Синтетический текст",
+        }
+        failed = Mock()
+        failed.json.return_value = {"status": "error", "error": "synthetic-error"}
+        for final, raises in ((completed, False), (failed, True)):
+            with (
+                self.subTest(error=raises),
+                patch.object(performance.RunMetrics, "report", autospec=True) as report,
+                patch.object(requests, "post", return_value=submitted),
+                patch.object(requests, "get", side_effect=[pending, final]),
+            ):
+                run = performance.profile_run(
+                    lambda: transcribe._transcribe_assemblyai_url(
+                        "https://example.invalid/audio"
+                    )
+                )
+                if raises:
+                    with self.assertRaisesRegex(RuntimeError, "synthetic-error"):
+                        run()
+                else:
+                    self.assertEqual(run(), "Синтетический текст")
+            metrics = report.call_args.args[0]
+            self.assertEqual(metrics.counters["audio.jobs_submitted"], 1)
+            self.assertEqual(metrics.counters["audio.poll_requests"], 2)
+            self.assertEqual(
+                metrics.counters.get("audio.jobs_completed", 0), int(not raises)
+            )
+            self.assertEqual(metrics.timings["audio.polling"]["errors"], int(raises))
+            self.assertEqual(
+                metrics.timings["audio.recognition"]["errors"], int(raises)
+            )
 
     def test_logging_levels_append_and_reconfiguration(self):
         setup = importlib.import_module("logging_setup")

@@ -13,6 +13,7 @@ import requests
 
 import config
 from logging_setup import log
+from performance import count, measure
 
 
 class BitrixError(Exception):
@@ -38,14 +39,23 @@ class B24Client:
     # ------------------------------------------------------------ низкий уровень
     def call(self, method, params=None):
         """Один вызов метода. Возвращает весь ответ (result, next, total, ...)."""
+        with measure(f"bitrix.call.{method}"):
+            return self._call(method, params)
+
+    def _call(self, method, params):
+        """Выполнить запрос с прежними паузами и повторами, собирая их статистику."""
         url = self.base + method
         last_err = None
         for attempt in range(config.MAX_RETRIES):
+            if attempt:
+                count(f"bitrix.retry.{method}")
             try:
-                resp = self.session.post(
-                    url, json=params or {}, timeout=config.REQUEST_TIMEOUT
-                )
+                with measure(f"bitrix.http.{method}"):
+                    resp = self.session.post(
+                        url, json=params or {}, timeout=config.REQUEST_TIMEOUT
+                    )
             except requests.RequestException as e:
+                count(f"bitrix.network_error.{method}")
                 last_err = e
                 wait = 2**attempt
                 log.warning(
@@ -57,10 +67,12 @@ class B24Client:
                     config.MAX_RETRIES,
                     wait,
                 )
-                time.sleep(wait)
+                with measure(f"bitrix.backoff.{method}"):
+                    time.sleep(wait)
                 continue
 
             if resp.status_code == 429:
+                count(f"bitrix.http_429.{method}")
                 wait = 2**attempt
                 log.warning(
                     "{}: HTTP 429, попытка {}/{}, пауза {} с",
@@ -69,12 +81,14 @@ class B24Client:
                     config.MAX_RETRIES,
                     wait,
                 )
-                time.sleep(wait)
+                with measure(f"bitrix.backoff.{method}"):
+                    time.sleep(wait)
                 continue
 
             try:
                 data = resp.json()
             except ValueError:
+                count(f"bitrix.invalid_json.{method}")
                 last_err = BitrixError(
                     method, f"HTTP {resp.status_code}", "Ответ не JSON"
                 )
@@ -86,13 +100,15 @@ class B24Client:
                     config.MAX_RETRIES,
                     2**attempt,
                 )
-                time.sleep(2**attempt)
+                with measure(f"bitrix.backoff.{method}"):
+                    time.sleep(2**attempt)
                 continue
 
             if "error" in data:
                 err = data.get("error", "")
                 desc = data.get("error_description", "")
                 if err in ("QUERY_LIMIT_EXCEEDED", "OPERATION_TIME_LIMIT"):
+                    count(f"bitrix.{err.lower()}.{method}")
                     wait = 2**attempt
                     log.warning(
                         "{}: {}, попытка {}/{}, пауза {} с",
@@ -102,12 +118,14 @@ class B24Client:
                         config.MAX_RETRIES,
                         wait,
                     )
-                    time.sleep(wait)
+                    with measure(f"bitrix.backoff.{method}"):
+                        time.sleep(wait)
                     last_err = BitrixError(method, err, desc)
                     continue
                 raise BitrixError(method, err, desc)
 
-            time.sleep(config.REQUEST_PAUSE)
+            with measure(f"bitrix.pause.{method}"):
+                time.sleep(config.REQUEST_PAUSE)
             return data
 
         raise BitrixError(method, "RETRIES_EXCEEDED", str(last_err))
