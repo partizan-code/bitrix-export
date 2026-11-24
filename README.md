@@ -70,6 +70,7 @@ mise run start
 - [Результаты выгрузки и форматы данных](docs/data.md)
 - [Эксплуатация, восстановление и Telegram-бот](docs/operations.md)
 - [Архитектура и источники данных](docs/architecture.md)
+- [Документация Bitrix24 через MCP и результаты сверки API](docs/bitrix-api.md)
 - [Изолированные проверки выгрузки](docs/testing.md)
 - [Навигация по технической документации](docs/README.md)
 
