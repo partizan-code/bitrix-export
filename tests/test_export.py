@@ -1061,6 +1061,129 @@ class ExportTests(unittest.TestCase):
         self.cfg.EXPORT_TYPE = "incremental"
         self.assertEqual(self.run_sync()["update_mode"], "FULL")
 
+    def test_chat_system_templates_and_existing_filters(self):
+        texts = (
+            "Начат новый диалог №123",
+            "Обращение направлено на всех участников очереди",
+            "Обращение направлено на Оператор Тестовый (ответственного в CRM)",
+            "Обращение также направлено Оператор Тестовый",
+            "Оператор Тестовый начал работу с диалогом",
+            "Оператор Тестовый начала работу с диалогом",
+            "Оператор Тестовый завершил работу с диалогом",
+            "Оператор Тестовый завершила работу с диалогом",
+            "Оператор Тестовый завершил текущий диалог",
+            "Оператор Тестовый переадресовал диалог на Второй Оператор",
+            "Оператор Тестовый переадресовала диалог на Второй Оператор",
+            "К чату присоединился Оператор Тестовый",
+            "К чату присоединилась Оператор Тестовый",
+            "Автоматическое завершение диалога",
+            "Диалог завершен.",
+            "Диалог завершён.",
+            "Диалог снят с оператора, так как оператор уволен",
+            "У Оператор Тестовый начался рабочий день. Теперь этот оператор тоже может видеть обращение",
+            "В данном канале у оператора ограничено время на ответ. Подробнее в статье.",
+            "Создан новый лид",
+            "Создана новая сделка",
+            "Оценка работы оператора",
+            "A new lead has been created",
+            "Рейтинг диалога",
+            " [b]НАЧАТ\u00a0НОВЫЙ[/b]\n диалог №123 ",
+        )
+        for text in texts:
+            for sender in ("0", 0):
+                with self.subTest(text=text, sender=sender):
+                    self.assertTrue(
+                        self.sync.fetch_openlines.is_system_message(
+                            {"sender_id": sender, "text": text, "params": {}}
+                        )
+                    )
+        self.assertTrue(
+            self.sync.fetch_openlines.is_system_message(
+                {"sender_id": "0", "text": "Карточка CRM", "params": {"attach": [1]}}
+            )
+        )
+
+    def test_chat_filter_preserves_authored_and_unknown_zero_sender_messages(self):
+        for text in (
+            "Начат новый диалог №123",
+            "Оператор Тестовый завершил работу с диалогом",
+            "Создан новый лид",
+        ):
+            for sender in ("17", 17, "42578"):
+                with self.subTest(text=text, sender=sender):
+                    self.assertFalse(
+                        self.sync.fetch_openlines.is_system_message(
+                            {
+                                "sender_id": sender,
+                                "text": text,
+                                "params": {"attach": [1]},
+                            }
+                        )
+                    )
+        for text in (
+            "Здравствуйте! Нужна мебель",
+            "Спасибо, что обратились в нашу компанию.",
+            "Здравствуйте, это чат-бот компании. Какой у вас вопрос?",
+            "Что означает «Начат новый диалог №123»?",
+            "Начат новый диалог №123 — это уведомление, которое я вижу",
+            "Я завершил работу с диалогом и хочу уточнить заказ",
+            "Диалог завершён, но заказ ещё не готов",
+            "Переданы дополнительные данные: ссылка на исходный пост",
+            "Неизвестное уведомление",
+            "",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    self.sync.fetch_openlines.is_system_message(
+                        {"sender_id": "0", "text": text, "params": {}}
+                    )
+                )
+        self.assertFalse(
+            self.sync.fetch_openlines.is_system_message(
+                {"text": "Начат новый диалог №123"}
+            )
+        )
+
+    def test_main_export_filters_service_messages_but_keeps_them_in_raw(self):
+        self.cfg.DEAL_IDS = self.cfg.LEAD_IDS = [1]
+        original = self.client.result
+
+        def result(method, params=None):
+            response = original(method, params)
+            if method == "imopenlines.session.history.get":
+                for mid, sender, text in (
+                    (10, "0", "Начат новый диалог №123"),
+                    (11, "0", "Обращение направлено на всех участников очереди"),
+                    (12, "0", "Оператор Тестовый завершил работу с диалогом"),
+                    (20, "0", "Здравствуйте! Нужна мебель"),
+                    (21, "17", "Начат новый диалог №123"),
+                ):
+                    response["message"][str(mid)] = {
+                        "id": str(mid),
+                        "senderid": sender,
+                        "date": ISO,
+                        "text": text,
+                    }
+            return response
+
+        with patch.object(self.client, "result", side_effect=result):
+            self.run_sync()
+        for entity in ("deal", "lead"):
+            messages = [
+                t
+                for t in self.sync.store.load_tps(1, entity=entity)
+                if t["event_type"] == "message"
+            ]
+            self.assertEqual(
+                {int(t["source"]["message_id"]) for t in messages}, {1, 20, 21}
+            )
+            actors = {
+                int(t["source"]["message_id"]): t["actor"]["type"] for t in messages
+            }
+            self.assertEqual(actors, {1: "manager", 20: "client", 21: "manager"})
+            raw = self.read_json(f"raw/{entity}_1.json")["ol_chats"][0]["messages"]
+            self.assertEqual({int(m["id"]) for m in raw}, {1, 2, 10, 11, 12, 20, 21})
+
     @staticmethod
     def chat_page(*ids, more=False, next_id=None, next_date=None):
         """Синтетическая страница документированного ответа истории сессии."""
@@ -1278,7 +1401,13 @@ class ExportTests(unittest.TestCase):
             module.collect_sessions(client, module.stamp("2026-01-01T00:00:00+00:00"))
 
     def compare_existing_snapshot(
-        self, *, fail_list=False, fail_history=False, missing_old=False, new_chat=False
+        self,
+        *,
+        fail_list=False,
+        fail_history=False,
+        missing_old=False,
+        new_chat=False,
+        service_messages=False,
     ):
         """Изменять разрешено только новый каталог; рабочая выгрузка неизменна."""
         self.run_sync()
@@ -1327,6 +1456,18 @@ class ExportTests(unittest.TestCase):
                 )
                 page["sessionId"] = params["SESSION_ID"]
                 page["chatId"] = 61
+                if service_messages:
+                    for mid, sender, text in (
+                        (6, "0", "Начат новый диалог №123"),
+                        (7, "0", "Здравствуйте! Нужна мебель"),
+                        (8, "17", "Начат новый диалог №123"),
+                    ):
+                        page["message"][str(mid)] = {
+                            "id": str(mid),
+                            "senderid": sender,
+                            "date": ISO,
+                            "text": text,
+                        }
                 if params["SESSION_ID"] == 320:
                     page["message"]["3"]["date"] = "2026-11-01T12:00:00+03:00"
                 else:
@@ -1373,6 +1514,22 @@ class ExportTests(unittest.TestCase):
             self.assertTrue(all(tp in rebuilt for tp in old["tps"]))
             self.assertEqual(len(rebuilt), len(old["tps"]) + 2)
             self.assertTrue((output / entity / old["group"] / f"{did}.md").is_file())
+
+    def test_session_compare_filters_new_service_messages_and_preserves_raw(self):
+        module, _, baseline, output, report = self.compare_existing_snapshot(
+            service_messages=True
+        )
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["summary"]["added_messages"], 24)
+        for (entity, did), old in baseline["entities"].items():
+            rebuilt = module.read_jsonl(output / entity / old["group"] / f"{did}.jsonl")
+            ids = {
+                int(t["source"]["message_id"]) for t in rebuilt if module.message_key(t)
+            }
+            self.assertEqual(ids, {1, 3, 4, 7, 8})
+        for sid in (320, 321):
+            messages = module.read_json(output / "sessions" / f"{sid}.json")["messages"]
+            self.assertIn(6, {int(m["id"]) for m in messages})
 
     def test_session_compare_denied_list_is_partial_not_no_new_dialogs(self):
         _, _, _, output, report = self.compare_existing_snapshot(fail_list=True)

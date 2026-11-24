@@ -206,6 +206,25 @@ SYSTEM_HINTS = (
     "рейтинг диалога",
 )
 
+# Шаблоны подтверждены сохранённой историей ОЛ, а не контрактом REST.
+# Полное совпадение и sender_id=0 ограничивают отсев служебными уведомлениями.
+SYSTEM_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"начат новый диалог №\s*\d+\.?",
+        r"обращение (?:также )?направлено (?:на )?\S.+",
+        r".+ (?:начал[аи]?|завершил[аи]?) работу с диалогом\.?",
+        r".+ завершил[аи]? текущий диалог\.?",
+        r".+ переадресовал[аи]? диалог на \S.+",
+        r"к чату присоединил(?:ся|ась) \S.+",
+        r"автоматическое завершение диалога\.?",
+        r"диалог заверш[её]н\.?",
+        r"диалог снят с оператора, так как оператор уволен\.?",
+        r"у .+ начался рабочий день\. теперь этот оператор тоже может видеть обращение\.?",
+        r"в данном канале у оператора ограничено время на ответ\. подробнее в статье\.?",
+    )
+)
+
 
 def classify_sender(sender_id, users_map, users_info, client_name):
     """
@@ -235,11 +254,13 @@ def classify_sender(sender_id, users_map, users_info, client_name):
 
 
 def is_system_message(msg):
-    """Служебные сообщения коннектора/CRM (не контент диалога)."""
-    if msg["sender_id"] != "0":
+    """Отсеять известные уведомления ОЛ, сохранив обычный текст отправителя 0."""
+    if str(msg.get("sender_id")) != "0":
         return False
-    text = (msg.get("text") or "").lower()
+    text = " ".join(clean_text(msg.get("text") or "").casefold().split())
     params = msg.get("params") or {}
     if params.get("attach"):  # карточки «создан лид» и т.п.
         return True
-    return any(h in text for h in SYSTEM_HINTS)
+    return any(h in text for h in SYSTEM_HINTS) or any(
+        pattern.fullmatch(text) for pattern in SYSTEM_PATTERNS
+    )
