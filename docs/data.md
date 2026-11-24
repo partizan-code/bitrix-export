@@ -381,6 +381,13 @@ ZIP-сжатие: с ростом истории размер увеличива
 | Задача | `task_<id>` | Исполнитель `RESPONSIBLE_ID`; постановщик — `content.created_by` |
 | Смена стадии | `stage_<i>_<stage_id>` | `system` |
 
+Основной сбор переписок читает все доступные сессии чата и их страницы.
+В сыром `raw/<entity>_<id>.json` каждый элемент `ol_chats` содержит
+`chat`, объединённые `messages` и список `session_ids`; старые raw могли не
+содержать этого списка. ID сообщения остаётся `ol_<chat_id>_<msg_id>`:
+сессия не меняет формат касания, JSONL и Markdown.
+[Доступность и ограничения полноты](architecture.md#история-открытых-линий).
+
 - `channel`: `call`, код ОЛ (`viber`, `telegram`, `whatsapp`, `site_chat`, `vk`,
   `instagram`, `facebook`, `avito`, `olx` и др.), `comment`, `email`, `meeting`, `task`, `crm`.
 - `event_type`: `call`, `message`, `comment`, `email`, `meeting`, `task`, `stage_change`.

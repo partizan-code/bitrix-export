@@ -12,14 +12,11 @@ import re
 import sys
 import tempfile
 from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SESSION_LIST = "imopenlines.v2.Session.list"
-PAGE_SIZE = 200
-MAX_OFFSET = 10000
 
 
 class ComparisonError(Exception):
@@ -215,87 +212,6 @@ class BudgetClient:
         return self.client.result(method, params)
 
 
-def list_page(client, params: dict) -> tuple[list[dict], bool]:
-    """Разобрать статистику без стандартного call_list/start/next."""
-    result = client.result(SESSION_LIST, params)
-    if (
-        not isinstance(result, dict)
-        or not isinstance(result.get("sessions"), list)
-        or type(result.get("hasNextPage")) is not bool
-    ):
-        raise ComparisonError("INVALID_SESSION_LIST")
-    rows = result["sessions"]
-    if result["hasNextPage"] and not rows:
-        raise ComparisonError("EMPTY_SESSION_PAGE")
-    for row in rows:
-        if not isinstance(row, dict) or int(row["id"]) <= 0 or int(row["chatId"]) <= 0:
-            raise ComparisonError("INVALID_SESSION_ROW")
-        stamp(row["dateCreate"])
-    return rows, result["hasNextPage"]
-
-
-def collect_sessions(client, cutoff: datetime) -> dict[int, dict]:
-    """Пройти всю доступную историю, дробя периоды до 365 дней и offset до 10000."""
-    first, _ = list_page(
-        client,
-        {"order": "dateCreate", "orderDirection": "asc", "limit": 1, "offset": 0},
-    )
-    if not first:
-        return {}
-    oldest = stamp(first[0]["dateCreate"]).replace(microsecond=0)
-    if oldest > cutoff:
-        raise ComparisonError("INVALID_OLDEST_SESSION")
-    sessions = {}
-
-    def window(start: datetime, end: datetime) -> None:
-        offset, seen = 0, set()
-        while True:
-            rows, more = list_page(
-                client,
-                {
-                    "dateCreateFrom": start.isoformat(),
-                    "dateCreateTo": end.isoformat(),
-                    "order": "dateCreate",
-                    "orderDirection": "asc",
-                    "offset": offset,
-                    "limit": PAGE_SIZE,
-                },
-            )
-            ids = {int(r["id"]) for r in rows}
-            if rows and not ids.difference(seen):
-                raise ComparisonError("REPEATED_SESSION_PAGE")
-            seen.update(ids)
-            for row in rows:
-                if not start <= stamp(row["dateCreate"]) <= end:
-                    raise ComparisonError("SESSION_OUTSIDE_WINDOW")
-                sid = int(row["id"])
-                if sid in sessions and int(sessions[sid]["chatId"]) != int(
-                    row["chatId"]
-                ):
-                    raise ComparisonError("SESSION_CHAT_CHANGED")
-                sessions[sid] = row
-            if not more:
-                return
-            offset += len(rows)
-            if offset > MAX_OFFSET:
-                seconds = int((end - start).total_seconds())
-                if seconds < 2:
-                    raise ComparisonError("SESSION_WINDOW_TOO_DENSE")
-                middle = start + timedelta(seconds=seconds // 2)
-                window(start, middle)
-                window(middle, end)
-                return
-
-    start = oldest
-    while start <= cutoff:
-        end = min(start + timedelta(days=365), cutoff)
-        window(start, end)
-        if end == cutoff:
-            break
-        start = end
-    return sessions
-
-
 def rebuild(client, baseline: dict, output: Path, *, max_calls: int = 5000) -> dict:
     """Пересобрать только слой чатов и записать независимые карточки и сравнение."""
     import export_llm
@@ -323,7 +239,7 @@ def rebuild(client, baseline: dict, output: Path, *, max_calls: int = 5000) -> d
     cache = {}
     try:
         # Сначала проверить новый источник: при отказе тарифа не опрашивать все CRM-сущности.
-        sessions = collect_sessions(client, cutoff)
+        sessions = fetch_openlines.collect_sessions(client, cutoff)
         report["available_sessions"] = len(sessions)
         for key in rows:
             entity, did = key

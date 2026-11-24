@@ -73,6 +73,7 @@ INCLUDE_COMMENTS = True  # комментарии таймлайна
 INCLUDE_MEETINGS = False  # встречи (TYPE_ID=1)
 INCLUDE_TASKS = True  # задачи; без права task пропускаются с предупреждением
 OPENLINES_SESSION_MAX_PAGES = 200  # предел страниц одной сессии; превышение — ошибка
+OPENLINES_SESSION_LIST_MAX_CALLS = 5000  # предел вызовов общего списка сессий за прогон
 
 # Группы выгрузки (общие для сделок и лидов)
 PROCESS_ACTIVE = True  # активные

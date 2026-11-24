@@ -15,6 +15,7 @@ import tempfile
 import time
 import types
 import unittest
+from collections import Counter
 from contextlib import ExitStack, closing, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -142,6 +143,7 @@ def make_config(root):
         "INCLUDE_EMAILS": True,
         "INCLUDE_MEETINGS": True,
         "OPENLINES_SESSION_MAX_PAGES": 200,
+        "OPENLINES_SESSION_LIST_MAX_CALLS": 5000,
         "DOWNLOAD_RECORDINGS": False,
         "MIN_RECORDING_DURATION_SEC": 15,
         "TRANSCRIBE_ENABLED": True,
@@ -380,8 +382,16 @@ class FakeClient:
             ]
         if method == "imopenlines.crm.chat.get":
             return [{"CHAT_ID": "61", "CONNECTOR_ID": "telegrambot"}, {}]
+        if method == "imopenlines.v2.Session.list":
+            return {
+                "sessions": [
+                    {"id": 321, "chatId": 61, "dateCreate": "2026-11-01T00:00:00+03:00"}
+                ],
+                "hasNextPage": False,
+            }
         if method == "imopenlines.session.history.get":
             return {
+                "chatId": 61,
                 "sessionId": 321,
                 "hasNextPage": False,
                 "message": {
@@ -428,6 +438,9 @@ class ExportTests(unittest.TestCase):
         self.sync = importlib.import_module("sync")
         self.client = FakeClient()
         self.client.bitrix_error = self.sync.BitrixError
+        self.stack.enter_context(
+            patch.object(self.sync.fetch_openlines, "datetime", FixedDatetime)
+        )
         self.stack.enter_context(
             patch.object(self.sync, "B24Client", return_value=self.client)
         )
@@ -610,7 +623,7 @@ class ExportTests(unittest.TestCase):
         # Имена и export_id используют штатные форматы времени вместо общего STAMP.
         self.assertEqual(
             self.digest(),
-            "b84d51594c2e7a6dbdf2d87965403006226333871832ede4ba1a3ab4fcdd3e24",
+            "8d141b0d6d6144141dabb81388157adb975c3790b0b930df3459b407fc142f23",
         )
 
     def test_snapshot_sqlite_imports_final_zip(self):
@@ -667,7 +680,7 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(all(p["filter"]["OWNER_ID"] == 1 for p in calls))
         self.assertEqual(
             self.digest(),
-            "4d58c8d153b3805f24eade12f01238e5fe45c94be788eb6af05d652d6fe565f4",
+            "b11cfacd12094f6b26a1bc43311394e58239bca7411ebf40f0b592f5a59753d1",
         )
 
     def test_country_uses_category_or_source_and_preserves_crm_fields(self):
@@ -1061,6 +1074,218 @@ class ExportTests(unittest.TestCase):
         self.cfg.EXPORT_TYPE = "incremental"
         self.assertEqual(self.run_sync()["update_mode"], "FULL")
 
+    def test_main_chat_history_includes_old_sessions_pages_and_index_crm_links(self):
+        module = self.sync.fetch_openlines
+        original = self.client.result
+        sessions = [
+            {"id": 319, "chatId": 61, "dateCreate": "2024-01-01T00:00:00+00:00"},
+            {"id": 321, "chatId": 61, "dateCreate": "2026-11-01T00:00:00+03:00"},
+            {
+                "id": 330,
+                "chatId": 62,
+                "dateCreate": "2026-11-02T00:00:00+03:00",
+                "crmEntityType": "lead",
+                "crmEntityId": "1",
+                "source": "livechat",
+            },
+        ]
+        listed = self.session_compare_source(module, sessions)
+        calls = []
+
+        def result(method, params=None):
+            calls.append((method, copy.deepcopy(params)))
+            if method == module.SESSION_LIST:
+                return listed(method, params)
+            if method == "imopenlines.session.history.get":
+                sid = params["SESSION_ID"]
+                if sid == 319:
+                    page = (
+                        self.chat_page("9", more=True, next_id=9, next_date=100)
+                        if "LAST_ID" not in params
+                        else self.chat_page("3")
+                    )
+                    for msg in page["message"].values():
+                        msg.update(senderid="55", date="2024-01-01T01:00:00+00:00")
+                    page.update(
+                        chatId=61, sessionId=319, users={"55": {"name": "Оператор"}}
+                    )
+                    return page
+                if sid == 330:
+                    page = self.chat_page("7")
+                    page.update(chatId=62, sessionId=330)
+                    return page
+                page = original(method, params)
+                page["message"]["3"] = {
+                    "id": "3",
+                    "senderid": "55",
+                    "date": "2024-01-01T01:00:00+00:00",
+                    "text": "Сообщение 3",
+                }
+                return page
+            return original(method, params)
+
+        self.cfg.DATE_FROM = "2026-11-01"
+        with patch.object(self.client, "result", side_effect=result):
+            manifest = self.run_sync()
+        self.assertTrue(manifest["is_complete"])
+        for entity in ("deal", "lead"):
+            for did in (1, 2, 3):
+                messages = [
+                    t
+                    for t in self.sync.store.load_tps(did, entity=entity)
+                    if t["event_type"] == "message"
+                ]
+                expected = {1, 3, 9, 7} if (entity, did) == ("lead", 1) else {1, 3, 9}
+                self.assertEqual(
+                    {int(t["source"]["message_id"]) for t in messages}, expected
+                )
+                self.assertEqual(len(messages), len(expected))
+                self.assertEqual(
+                    next(t for t in messages if int(t["source"]["message_id"]) == 3)[
+                        "actor"
+                    ]["user_id"],
+                    55,
+                )
+                raw = self.read_json(f"raw/{entity}_{did}.json")["ol_chats"]
+                self.assertEqual(raw[0]["session_ids"], [319, 321])
+        histories = [
+            params
+            for method, params in calls
+            if method == "imopenlines.session.history.get"
+        ]
+        self.assertEqual(
+            Counter(p["SESSION_ID"] for p in histories), {319: 2, 321: 1, 330: 1}
+        )
+        self.assertTrue(all("CHAT_ID" not in params for params in histories))
+        probes = [
+            params
+            for method, params in calls
+            if method == module.SESSION_LIST and "dateCreateFrom" not in params
+        ]
+        self.assertEqual(len(probes), 1)
+
+    def test_main_session_list_denied_once_marks_entities_for_retry_and_preserves_store(
+        self,
+    ):
+        self.run_sync()
+        before = Path(self.cfg.DATA_DIR) / "store" / "tps" / "1.jsonl"
+        contents = before.read_bytes()
+        original = self.client.result
+        calls = []
+
+        def result(method, params=None):
+            calls.append(method)
+            if method == self.sync.fetch_openlines.SESSION_LIST:
+                raise self.sync.BitrixError(method, "TARIFF_RESTRICTION")
+            return original(method, params)
+
+        with patch.object(self.client, "result", side_effect=result):
+            manifest = self.run_sync()
+        self.assertFalse(manifest["is_complete"])
+        self.assertEqual(manifest["errors_count"], 2)
+        self.assertEqual(calls.count(self.sync.fetch_openlines.SESSION_LIST), 1)
+        self.assertNotIn("imopenlines.session.history.get", calls)
+        self.assertEqual(before.read_bytes(), contents)
+        self.assertEqual(
+            self.read_json("data/state.json")["errors"], {"deals": [1], "leads": [1]}
+        )
+        self.assertTrue(self.run_sync()["is_complete"])
+
+    def test_main_chat_binding_error_and_invisible_sessions_are_not_empty_history(self):
+        original = self.client.result
+        for failure in ("bindings", "no_sessions"):
+            with self.subTest(failure=failure):
+
+                def result(method, params=None, failure=failure):
+                    if failure == "bindings" and method == "imopenlines.crm.chat.get":
+                        raise self.sync.BitrixError(method, "ACCESS_DENIED")
+                    if (
+                        failure == "no_sessions"
+                        and method == self.sync.fetch_openlines.SESSION_LIST
+                    ):
+                        return {"sessions": [], "hasNextPage": False}
+                    return original(method, params)
+
+                with patch.object(self.client, "result", side_effect=result):
+                    manifest = self.run_sync()
+                self.assertFalse(manifest["is_complete"])
+                self.assertEqual(manifest["errors_count"], 6)
+                self.assertFalse(self.sync.store.has_deal(1))
+
+    def test_old_session_failure_preserves_previous_raw_and_store(self):
+        self.run_sync()
+        before = {
+            name: (self.root / name).read_bytes()
+            for entity in ("deal", "lead")
+            for name in (
+                f"raw/{entity}_1.json",
+                f"data/store/{'lead/' if entity == 'lead' else ''}tps/1.jsonl",
+            )
+        }
+        self.cfg.DEAL_IDS = self.cfg.LEAD_IDS = [1]
+        module = self.sync.fetch_openlines
+        original = self.client.result
+        sessions = [
+            {"id": sid, "chatId": 61, "dateCreate": "2026-11-01T00:00:00+03:00"}
+            for sid in (319, 321)
+        ]
+        listed = self.session_compare_source(module, sessions)
+
+        def result(method, params=None):
+            if method == module.SESSION_LIST:
+                return listed(method, params)
+            if (
+                method == "imopenlines.session.history.get"
+                and params["SESSION_ID"] == 319
+            ):
+                raise self.sync.BitrixError(method, "ACCESS_DENIED")
+            return original(method, params)
+
+        with patch.object(self.client, "result", side_effect=result):
+            manifest = self.run_sync()
+        self.assertFalse(manifest["is_complete"])
+        self.assertEqual(manifest["errors_count"], 2)
+        for name, data in before.items():
+            self.assertEqual((self.root / name).read_bytes(), data)
+
+    def test_no_chats_and_empty_session_list_is_complete(self):
+        original = self.client.result
+
+        def result(method, params=None):
+            if method == self.sync.fetch_openlines.SESSION_LIST:
+                return {"sessions": [], "hasNextPage": False}
+            if method == "imopenlines.crm.chat.get":
+                return []
+            return original(method, params)
+
+        with patch.object(self.client, "result", side_effect=result):
+            self.assertTrue(self.run_sync()["is_complete"])
+        self.assertEqual(self.read_json("raw/deal_1.json")["ol_chats"], [])
+
+    def test_session_list_call_limit_and_invalid_rows_fail_closed(self):
+        module = self.sync.fetch_openlines
+        client = Mock()
+        session = {"id": 1, "chatId": 61, "dateCreate": "2026-01-01T00:00:00+00:00"}
+        client.result.return_value = {"sessions": [session], "hasNextPage": False}
+        with self.assertRaisesRegex(module.SessionListError, "SESSION_LIST_CALL_LIMIT"):
+            module.collect_sessions(client, module.stamp(ISO), max_calls=1)
+        self.assertEqual(client.result.call_count, 1)
+        for value in (0, -1, True, 1.5):
+            client.reset_mock()
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                module.collect_sessions(client, module.stamp(ISO), max_calls=value)
+            client.result.assert_not_called()
+        for row in (
+            None,
+            {},
+            {**session, "chatId": True},
+            {**session, "id": 1.5},
+            {**session, "dateCreate": "2026-01-01"},
+        ):
+            client.result.return_value = {"sessions": [row], "hasNextPage": False}
+            with self.subTest(row=row), self.assertRaises(module.SessionListError):
+                module.collect_sessions(client, module.stamp(ISO))
+
     def test_chat_system_templates_and_existing_filters(self):
         texts = (
             "Начат новый диалог №123",
@@ -1328,7 +1553,7 @@ class ExportTests(unittest.TestCase):
         return result
 
     def test_session_compare_lists_full_history_with_overlapping_year_windows(self):
-        module = load_script("compare_chat_sessions")
+        module = self.sync.fetch_openlines
         dates = (
             "2024-01-01T00:00:00+00:00",
             "2024-12-31T00:00:00.500+00:00",
@@ -1347,7 +1572,7 @@ class ExportTests(unittest.TestCase):
         self.assertGreater(client.result.call_count, 3)
 
     def test_session_compare_splits_window_before_offset_limit(self):
-        module = load_script("compare_chat_sessions")
+        module = self.sync.fetch_openlines
         sessions = [
             {"id": i, "chatId": 61, "dateCreate": f"2026-01-0{i}T00:00:00+00:00"}
             for i in range(1, 5)
@@ -1367,11 +1592,11 @@ class ExportTests(unittest.TestCase):
         )
 
     def test_session_compare_repeated_or_invalid_pages_and_budget_are_errors(self):
-        module = load_script("compare_chat_sessions")
+        module = self.sync.fetch_openlines
         session = {"id": 1, "chatId": 61, "dateCreate": "2026-01-01T00:00:00+00:00"}
         client = Mock()
         client.result.return_value = {"sessions": [session], "hasNextPage": True}
-        with self.assertRaisesRegex(module.ComparisonError, "REPEATED_SESSION_PAGE"):
+        with self.assertRaisesRegex(module.SessionListError, "REPEATED_SESSION_PAGE"):
             module.collect_sessions(client, module.stamp("2026-01-02T00:00:00+00:00"))
         for result in (
             None,
@@ -1379,15 +1604,19 @@ class ExportTests(unittest.TestCase):
             {"sessions": [], "hasNextPage": "false"},
         ):
             client.result.return_value = result
-            with self.subTest(result=result), self.assertRaises(module.ComparisonError):
+            with (
+                self.subTest(result=result),
+                self.assertRaises(module.SessionListError),
+            ):
                 module.list_page(client, {})
-        limited = module.BudgetClient(client, 1)
+        comparison = load_script("compare_chat_sessions")
+        limited = comparison.BudgetClient(client, 1)
         limited.result("first")
-        with self.assertRaisesRegex(module.ComparisonError, "CALL_BUDGET_EXCEEDED"):
+        with self.assertRaisesRegex(comparison.ComparisonError, "CALL_BUDGET_EXCEEDED"):
             limited.result("second")
 
     def test_session_compare_dense_second_is_reported_as_incomplete(self):
-        module = load_script("compare_chat_sessions")
+        module = self.sync.fetch_openlines
         sessions = [
             {"id": i, "chatId": 61, "dateCreate": "2026-01-01T00:00:00+00:00"}
             for i in range(1, 5)
@@ -1396,7 +1625,7 @@ class ExportTests(unittest.TestCase):
         client.result.side_effect = self.session_compare_source(module, sessions)
         with (
             patch.object(module, "MAX_OFFSET", 2),
-            self.assertRaisesRegex(module.ComparisonError, "SESSION_WINDOW_TOO_DENSE"),
+            self.assertRaisesRegex(module.SessionListError, "SESSION_WINDOW_TOO_DENSE"),
         ):
             module.collect_sessions(client, module.stamp("2026-01-01T00:00:00+00:00"))
 
@@ -1430,11 +1659,11 @@ class ExportTests(unittest.TestCase):
                     "source": "telegrambot",
                 }
             )
-        paged = self.session_compare_source(module, sessions)
+        paged = self.session_compare_source(self.sync.fetch_openlines, sessions)
         api = Mock()
 
         def result(method, params):
-            if method == module.SESSION_LIST:
+            if method == self.sync.fetch_openlines.SESSION_LIST:
                 if fail_list:
                     raise self.sync.BitrixError(
                         method, "TARIFF_RESTRICTION", "https://example.invalid/secret"
@@ -1614,11 +1843,19 @@ class ExportTests(unittest.TestCase):
 
         def result(method, params=None):
             nonlocal session_requests
+            if (
+                method == "imopenlines.crm.chat.get"
+                and params["CRM_ENTITY_TYPE"] == "deal"
+                and params["CRM_ENTITY"] == 1
+            ):
+                return []
             if method == "imopenlines.session.history.get":
                 session_requests += 1
-                if session_requests == 2 and not first_page:
-                    return self.chat_page("10", more=True, next_id=10, next_date=100)
-                if session_requests == (2 if first_page else 3):
+                if session_requests == 1 and not first_page:
+                    page = self.chat_page("10", more=True, next_id=10, next_date=100)
+                    page["chatId"] = 61
+                    return page
+                if session_requests == (1 if first_page else 2):
                     raise self.sync.BitrixError(method, "DENIED")
             return original(method, params)
 

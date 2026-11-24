@@ -41,6 +41,18 @@
    при их исчерпании ошибка загрузки пользователей передаётся наружу.
    Контракт [user.get](https://apidocs.bitrix24.ru/api-reference/user/user-get.html)
    сверён через MCP, сам запрос без фильтра и его пагинация не менялись.
+4. **24 ноября 2026, шаг 4 — все доступные сессии в основном экспорте.**
+   Общий алгоритм списка перенесён из эксперимента в `fetch_openlines.py`.
+   `OpenLinesHistory` загружает индекс один раз за прогон, объединяет чаты
+   текущих CRM-привязок и связей индекса, читает все SESSION_ID и все страницы.
+   Полные истории используются повторно между сделками/лидами; raw содержит
+   `session_ids`. Отказ списка/привязок, недоступная сессия и лимиты дают ошибку
+   сущности, а не успешную неполную историю. Поиск MCP для `crm.chat.get`
+   вернул нерелевантный метод; прочитана карточка точного имени, контракт
+   согласован. Все три метода повторно сверены через MCP. Формат карточек
+   сохранён. Ограничения прав, тарифа и переноса из store остаются:
+   [алгоритм](architecture.md#история-открытых-линий),
+   [предложение обновления старых данных](operations.md#обновление-сохранённых-переписок-предлагаемый-порядок).
 
 ## Охват и метод
 
@@ -48,8 +60,8 @@
 [скрипт сравнения всех сессий](operations.md#сравнение-всех-сессий-чатов).
 Он использует `imopenlines.v2.Session.list` для поиска SESSION_ID и текущий
 разбор `imopenlines.session.history.get` с явным SESSION_ID. Это отдельная
-пересборка чатов по существующему снимку; ограничение основного sync по
-последней сессии пока сохраняется. Скрипт отдельно учитывает неполноту,
+пересборка чатов по существующему снимку. На шаге 4 общий список перенесён
+в основной модуль и используется также `sync.py`. Скрипт отдельно учитывает неполноту,
 старые добавления и сообщения, поступившие после исходного снимка.
 
 Поиск по Python-файлам и чтение AST первоначально обнаружили 23 разных REST-метода.
@@ -91,8 +103,8 @@
 | [crm.activity.get](https://apidocs.bitrix24.ru/api-reference/crm/timeline/activities/activity-base/crm-activity-get.html) | `fetch_activities.py:107`, `scripts/diag_download.py:109` | `id` корректен; FILES относится к Диску, WebDAV-вложения не поддержаны |
 | [crm.timeline.comment.list](https://apidocs.bitrix24.ru/api-reference/crm/timeline/comments/crm-timeline-comment-list.html) | `fetch_activities.py:218` | Обязательные `ENTITY_ID/ENTITY_TYPE`, поля, сортировка и стандартная пагинация согласованы; вложения не нормализуются |
 | [imopenlines.crm.chat.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/chats/imopenlines-crm-chat-get.html) | `fetch_openlines.py:51` | Тип сущности, ID, `ACTIVE_ONLY=N` и массив привязок согласованы |
-| [imopenlines.session.history.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/sessions/imopenlines-session-history-get.html) | `fetch_openlines.get_chat_history` | Шаг 1: все страницы последней сессии через `SESSION_ID` и `LAST_ID/LAST_DATE`; предыдущие сессии не охвачены |
-| [imopenlines.v2.Session.list](https://apidocs.bitrix24.ru/api-reference/imopenlines/statistics/imopenlines-v2-session-list.html) | `scripts/compare_chat_sessions.collect_sessions` | Эксперимент: `result.sessions`, `offset/limit`, `hasNextPage`, окна до 365 дней; права на отчёты и тариф требуют проверки на портале |
+| [imopenlines.session.history.get](https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/sessions/imopenlines-session-history-get.html) | `fetch_openlines.get_chat_history`, `OpenLinesHistory` | Все страницы каждого доступного SESSION_ID, `LAST_ID/LAST_DATE`, проверка chatId/sessionId; ошибка при неполноте |
+| [imopenlines.v2.Session.list](https://apidocs.bitrix24.ru/api-reference/imopenlines/statistics/imopenlines-v2-session-list.html) | `fetch_openlines.collect_sessions` | Основной экспорт и сравнение: `result.sessions`, `offset/limit`, `hasNextPage`, окна до 365 дней, дробление по offset, предел запросов; полнота зависит от прав и тарифа |
 | [tasks.task.list](https://apidocs.bitrix24.ru/api-reference/tasks/tasks-task-list.html) | `fetch_tasks.py:34` | Для текущего REST допустимы объект `filter`, `UF_CRM_TASK`, `start` и `result.tasks`; смешанную карточку MCP нельзя применять как контракт REST 3.0 |
 | [user.get](https://apidocs.bitrix24.ru/api-reference/user/user-get.html) | `users.load_users`, `LazyUserMap._fetch` | Общая загрузка с `next/start` согласована; лишний повтор удалён на шаге 3, точечный запрос и кэш требуют уточнения ниже |
 | [crm.contact.get](https://apidocs.bitrix24.ru/api-reference/crm/contacts/crm-contact-get.html) | `users.py:155` | Параметр `id` и объект контакта согласованы; ошибки запроса навсегда кэшируются как отсутствие имени |
@@ -104,7 +116,7 @@
 
 ## Ошибки и риски корректности
 
-### P1. История открытой линии выгружается частично
+### P1. История открытой линии выгружается частично — исправлено для доступных сессий
 
 На момент аудита `fetch_openlines.get_chat_history` делал один запрос
 по `CHAT_ID` и получал по умолчанию 50 сообщений последней сессии; код
@@ -122,6 +134,11 @@
 повторно через MCP и официальную страницу метода. Осталось обеспечить историю
 предыдущих сессий. Успех этого метода по-прежнему означает завершение одной
 сессии, а не подтверждённую полноту чата.
+
+**Состояние после шага 4:** основной путь собирает все видимые сессии и страницы.
+Сессии, скрытые правами, и обращения после начала загрузки индекса не гарантируются.
+Ранее сохранённые карточки не мигрируются автоматически; отдельное обновление
+переписок предложено в [инструкции](operations.md#обновление-сохранённых-переписок-предлагаемый-порядок).
 
 ### P1. Запасная загрузка IM — закрыто удалением
 
@@ -231,8 +248,8 @@ scope/прав может выглядеть как отсутствие кас�
 
 ## Рекомендуемый порядок работ и проверки
 
-Сначала обеспечить охват предыдущих сессий чатов через API открытых линий.
-Затем обработку HTTP/ресурсных лимитов, статусы недоступных источников,
+Охват предыдущих доступных сессий реализован на шаге 4; для старых карточек
+нужна отдельная пересборка переписок. Затем обработка HTTP/ресурсных лимитов, статусы недоступных источников,
 отрицательные кэши и одинаковую семантику фильтров. После этого сокращать
 запросы по измерениям: ранний лимит, общие справочники, batch и обход по ID.
 Общий план ускорения остаётся в [roadmap.md](roadmap.md).
@@ -245,7 +262,7 @@ HTTP 429 с `OPERATION_TIME_LIMIT`, 503 с `QUERY_LIMIT_EXCEEDED`, 502 с JSON
 справочника и последующее восстановление. Для оптимизаций дополнительно
 проверить число HTTP-вызовов и неизменность состава касаний на моках.
 
-Кроме отмеченных шагов 1–3, приведённые предложения не реализованы.
+Кроме отмеченных шагов 1–4, приведённые предложения не реализованы.
 Реальная проверка прав, охвата и производительности требует отдельного
 разрешения на конкретный запуск
 рабочего API. Формат карточек, включая подпись «Страна», менять не требуется.

@@ -136,6 +136,7 @@ def process_entity(
     ctx=None,
     pipeline_map=None,
     entity="deal",
+    chat_history=None,
 ):
     ep = _ENTITY[entity]
     owner_type = ep["owner_type"]
@@ -181,13 +182,17 @@ def process_entity(
 
     with measure("source.chats"):
         # --- чаты открытых линий
-        chats = fetch_openlines.get_deal_chats(client, did, entity_type=entity)
+        if chat_history is None:
+            chat_history = fetch_openlines.OpenLinesHistory(client)
+        chats = chat_history.get_entity_chats(did, entity_type=entity)
         raw["ol_chats"] = []
         for chat in chats:
-            messages, users_info = fetch_openlines.get_chat_history(
-                client, chat["chat_id"]
+            messages, users_info, session_ids = chat_history.get_chat_history(
+                chat["chat_id"]
             )
-            raw["ol_chats"].append({"chat": chat, "messages": messages})
+            raw["ol_chats"].append(
+                {"chat": chat, "session_ids": session_ids, "messages": messages}
+            )
             for msg in messages:
                 if not msg.get("text") or fetch_openlines.is_system_message(msg):
                     continue
@@ -247,8 +252,14 @@ def process_entity(
     with measure("stage.entity_artifacts"):
         # --- сырой слепок
         raw_path = os.path.join(config.RAW_DIR, f"{entity}_{did}.json")
-        with open(raw_path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
+        temporary = raw_path + ".tmp"
+        try:
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False, indent=1, default=str)
+            os.replace(temporary, raw_path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
 
         # --- markdown-протокол
         md_path = export_llm.write_deal_markdown(
@@ -422,6 +433,7 @@ def run_entity(
                 ctx=ctx,
                 pipeline_map=category_map,
                 entity=entity,
+                chat_history=books["chat_history"],
             )
             groups[group]["tps"].extend(tps)
             groups[group]["index"].append(stats)
@@ -743,6 +755,7 @@ def main():
         "source_map": source_map,
         "contacts": contacts,
         "reg": registry.load(),
+        "chat_history": fetch_openlines.OpenLinesHistory(client),
     }
     changed_since_iso = (
         overlap_from.isoformat(timespec="seconds") if overlap_from else None
