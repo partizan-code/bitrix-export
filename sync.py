@@ -110,7 +110,7 @@ def _progress(**kw):
 # ---------------------------------------------------------------- транскрипция одного звонка
 def resolve_transcript(client, deal_id, call):
     """Получает транскрипцию звонка через AssemblyAI и возвращает текст/статус."""
-    has_recording = bool(call.get("recording_url") or call.get("file_ids"))
+    has_recording = bool(call.get("file_ids"))
     if not has_recording:
         return {"text": None, "status": "no_recording"}
 

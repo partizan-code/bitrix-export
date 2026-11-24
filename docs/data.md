@@ -374,7 +374,7 @@ ZIP-сжатие: с ростом истории размер увеличива
 
 | Событие | `touchpoint_id` | Источник actor |
 |---|---|---|
-| Звонок | `call_<activity_id>` (или `stat_id`) | `RESPONSIBLE_ID` активности, при отсутствии — `AUTHOR_ID` |
+| Звонок | `call_<activity_id>` | `RESPONSIBLE_ID` активности, при отсутствии — `AUTHOR_ID` |
 | Сообщение ОЛ | `ol_<chat_id>_<msg_id>` | Отправитель через `classify_sender` |
 | Комментарий | `comment_<id>` | `AUTHOR_ID` |
 | Письмо / встреча | `act_<id>` | `AUTHOR_ID` |
@@ -387,9 +387,11 @@ ZIP-сжатие: с ростом истории размер увеличива
 - `direction`: `in`, `out`, `internal`, `unknown`, `null`; `actor.type`:
   `manager`, `client`, `bot`, `system`, `unknown`; `content.type`: `text`, `transcript`, `meta`.
 - `source`: `activity_id`, `chat_id` + `message_id`, `comment_id` или `task_id`;
-  у звонков также `file_ids` и возможный `stat_id`.
+  у звонков также `file_ids` и `stat_id: null` для совместимости схемы.
 - Content звонка: телефон, длительность, пропуск, путь аудио, комментарий;
-  `recording_url` текущего CRM-потока — `null`. Задачи: описание, статус, дедлайн,
+  запись получается по `file_ids` Диска, `recording_url` сохранён как `null`
+  для совместимости схемы и не используется для скачивания.
+  Задачи: описание, статус, дедлайн,
   дата закрытия. Стадии: `stage_from` / `stage_to`.
 
 `transcript_status`: `assemblyai` — текст получен;

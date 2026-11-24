@@ -581,6 +581,11 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(call["responsible_user_id"], 42)
             self.assertEqual(call["deal_stage_at_time"]["stage_id"], "NEW")
             self.assertEqual(call["content"]["transcript_status"], "assemblyai")
+            self.assertEqual(
+                call["touchpoint_id"], f"call_{call['source']['activity_id']}"
+            )
+            self.assertIsNone(call["content"]["recording_url"])
+            self.assertIsNone(call["source"]["stat_id"])
             self.assertEqual(len([t for t in tps if t["event_type"] == "message"]), 1)
             md = self.sync.store.load_md(1, entity=entity)
             country = "RB" if entity == "deal" else "UNKNOWN"
@@ -1309,6 +1314,42 @@ class ExportTests(unittest.TestCase):
         for ent in ("Сделки", "Лиды"):
             for group in ("Активные", "Завершенные", "Технические"):
                 self.assertTrue((self.root / "export/snapshot" / ent / group).is_dir())
+
+    def test_load_users_keeps_client_retries(self):
+        api = importlib.import_module("api_client")
+        client = api.B24Client()
+        self.addCleanup(client.session.close)
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "result": [{"ID": "17", "NAME": "Иван", "LAST_NAME": "Тест"}]
+        }
+        with patch.object(
+            client.session,
+            "post",
+            side_effect=[requests.ConnectionError("Синтетический сбой"), response],
+        ) as post:
+            users = self.sync.load_users(client)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(users, {17: {"name": "Тест И.", "position": ""}})
+        self.assertEqual(self.read_json("data/users_cache.json"), {"17": users[17]})
+
+    def test_load_users_stops_after_client_retry_budget_and_preserves_cache(self):
+        api = importlib.import_module("api_client")
+        client = api.B24Client()
+        self.addCleanup(client.session.close)
+        cached = {"17": {"name": "Сохранённое имя", "position": ""}}
+        self.write_json("data/users_cache.json", cached)
+        with (
+            patch.object(
+                client.session,
+                "post",
+                side_effect=requests.ConnectionError("Синтетический сбой"),
+            ) as post,
+            self.assertRaisesRegex(api.BitrixError, "RETRIES_EXCEEDED"),
+        ):
+            self.sync.load_users(client)
+        self.assertEqual(post.call_count, self.cfg.MAX_RETRIES)
+        self.assertEqual(self.read_json("data/users_cache.json"), cached)
 
     def test_transcript_missing_recording_disabled_and_failed(self):
         self.assertEqual(

@@ -60,7 +60,7 @@ def _fill_stage(tp, history, stages_map):
 # ------------------------------------------------------------------ звонки
 def tp_from_call(deal, call, users_map, history, stages_map, transcript_info):
     tp = _base(deal, call["time"], "call", "call")
-    tp["touchpoint_id"] = f"call_{call.get('stat_id') or call.get('activity_id')}"
+    tp["touchpoint_id"] = f"call_{call.get('activity_id')}"
     tp["direction"] = call["direction"]
 
     uid = call.get("actor_user_id")
@@ -77,14 +77,14 @@ def tp_from_call(deal, call, users_map, history, stages_map, transcript_info):
         "phone": call.get("phone"),
         "duration_sec": call.get("duration_sec"),
         "failed_code": call.get("failed_code") or None,
-        "recording_url": call.get("recording_url"),
+        "recording_url": None,
         "audio_path": call.get("local_audio"),
         "transcript_status": status,
         "comment": call.get("comment"),
     }
     tp["source"] = {
         "activity_id": call.get("activity_id"),
-        "stat_id": call.get("stat_id"),
+        "stat_id": None,
         "file_ids": call.get("file_ids"),
     }
     return _fill_stage(tp, history, stages_map)

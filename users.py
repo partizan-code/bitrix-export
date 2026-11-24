@@ -48,11 +48,7 @@ def format_user_name(u):
 
 def load_users(client):
     """Полная карта {user_id: {'name': ..., 'position': ...}}."""
-    try:
-        raw = client.call_list("user.get")
-    except Exception:  # noqa: BLE001 — повтор загрузки необязательного справочника
-        # на части порталов user.get не принимает filter — берём всех
-        raw = client.call_list("user.get")
+    raw = client.call_list("user.get")
     users = {}
     for u in raw:
         uid = int(u["ID"])

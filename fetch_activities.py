@@ -156,6 +156,7 @@ def normalize_call(act):
         file_ids = []
 
     uid = act.get("RESPONSIBLE_ID") or act.get("AUTHOR_ID")
+    # stat_id и recording_url сохраняются как null для совместимости JSON.
     return {
         "source": "activity",
         "stat_id": None,

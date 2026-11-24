@@ -199,7 +199,7 @@ def download_call_recording(client, deal_id, call):
     file_ids = call.get("file_ids") or []
     if not file_ids:
         return None
-    act_id = call.get("activity_id") or call.get("stat_id") or "x"
+    act_id = call.get("activity_id") or "x"
 
     try:
         info = get_disk_file(client, file_ids[0])
@@ -322,7 +322,7 @@ def transcribe_file(path):
 
 def transcript_path(deal_id, call):
     """Путь к файлу транскрипции звонка в кэше transcripts/."""
-    act_id = call.get("activity_id") or call.get("stat_id") or "x"
+    act_id = call.get("activity_id") or "x"
     return os.path.join(config.TRANSCRIPTS_DIR, f"deal{deal_id}_call{act_id}.txt")
 
 
@@ -356,7 +356,7 @@ def transcribe_call(client, deal_id, call):
     При ASSEMBLYAI_DIRECT_URL запись на диск вообще не скачивается —
     AssemblyAI получает прямую ссылку (fallback: скачивание + upload).
     """
-    act_id = call.get("activity_id") or call.get("stat_id") or "x"
+    act_id = call.get("activity_id") or "x"
     txt_path = transcript_path(deal_id, call)
     if os.path.exists(txt_path):
         count("audio.transcript_cache_hit")
@@ -386,20 +386,8 @@ def transcribe_call(client, deal_id, call):
             return txt_path
 
     audio_path = call.get("local_audio")
-    if not audio_path:
-        if call.get("file_ids"):
-            audio_path = download_call_recording(client, deal_id, call)
-        elif call.get("recording_url"):
-            audio_path = os.path.join(
-                config.AUDIO_DIR, f"deal{deal_id}_call{act_id}.mp3"
-            )
-            try:
-                download_recording(call["recording_url"], audio_path)
-            except Exception:  # noqa: BLE001 — ошибка записи не останавливает остальные звонки
-                log.exception(
-                    "Сущность {} звонок {}: запись не скачана", deal_id, act_id
-                )
-                return None
+    if not audio_path and call.get("file_ids"):
+        audio_path = download_call_recording(client, deal_id, call)
     if not audio_path:
         return None
 
