@@ -21,7 +21,7 @@ ZIP (если включён и результат непустой), прогр
 | [performance.py](../performance.py) | Профиль одного `sync.main`: монотонные таймеры, счётчики API/аудио, итоговые агрегаты в Loguru; [интерпретация](operations.md#время-выгрузки-и-запросов) |
 | [fetch_deals.py](../fetch_deals.py), [fetch_leads.py](../fetch_leads.py) | `crm.deal/lead.list/get/fields`, поля `*` + `UF_*`, группы, инкремент; `crm.stagehistory.list`, `stage_at` |
 | [fetch_activities.py](../fetch_activities.py) | `crm.activity.list/get`: звонки TYPE_ID=2, письма 3, встречи 1; `crm.timeline.comment.list` |
-| [fetch_openlines.py](../fetch_openlines.py) | `imopenlines.crm.chat.get`, `imopenlines.session.history.get`, fallback `im.dialog.messages.get` |
+| [fetch_openlines.py](../fetch_openlines.py) | `imopenlines.crm.chat.get`, `imopenlines.session.history.get` |
 | [fetch_tasks.py](../fetch_tasks.py) | `tasks.task.list`, `UF_CRM_TASK=D_<id>` / `L_<id>` |
 | [users.py](../users.py) | `user.get`, `crm.contact.get`, `crm.status.list`, `crm.category.list`; кэши, `ContactBook`, `LazyUserMap` |
 | [transcribe.py](../transcribe.py) | `disk.file.get`, аудио, AssemblyAI, кэш текстов |
@@ -44,7 +44,31 @@ ZIP (если включён и результат непустой), прогр
 
 При изменении интеграции используйте [документацию Bitrix24 через MCP](bitrix-api.md).
 [Сверка текущих запросов](bitrix-api-audit.md) описывает найденные ограничения
-полноты истории, разбора ответов и повторов; исправления в код пока не внесены.
+полноты истории, разбора ответов и повторов и ход их устранения.
+
+### История открытых линий
+
+`get_chat_history` собирает все страницы **последней сессии** через
+`imopenlines.session.history.get`: первая выборка по `CHAT_ID`, следующие —
+по зафиксированному `SESSION_ID` с `LAST_ID=nextId` и `LAST_DATE=nextDate`.
+Сбор завершается только при `hasNextPage=false`. Сообщения объединяются по
+числовому ID, пользователи — между всеми страницами. Порядок результата —
+время и числовой ID сообщения; форма касаний и карточек сохраняется.
+
+`OPENLINES_SESSION_MAX_PAGES` в config ограничивает число страниц одной
+сессии (по умолчанию 200, размер страницы API по умолчанию 50).
+Повтор курсора, некорректный ответ или достижение предела при наличии
+следующей страницы дают `BitrixError(INCOMPLETE_HISTORY)`. Сбой API на любой
+странице передаётся наружу. Сущность не сохраняется частично,
+попадает в ошибки manifest, остальные продолжают обрабатываться.
+В обычном прогоне её ID записывается в state для повтора в следующем инкременте;
+в прогоне с ID/лимитами state не меняется.
+
+История загружается только через API открытых линий; запасного запроса через
+IM нет. **Предыдущие сессии чата этот путь пока не получает**: завершение
+сессии не доказывает полноту истории всего чата.
+
+### Остальные модули
 
 Основные `bot.py` и `sync.py` запускаются из корня. Служебные команды в
 `scripts/` добавляют корень в путь импорта при прямом запуске; `scripts`
@@ -92,7 +116,7 @@ ZIP (если включён и результат непустой), прогр
 
 `classify_sender` использует сотрудников → `users_info` → клиента/систему.
 Пустые и служебные сообщения (`is_system_message`), чаты без `CHAT_ID`
-пропускаются. IM-fallback ограничен 20 страницами. [Определение actor](data.md#касание).
+пропускаются. [Определение actor](data.md#касание).
 
 Сделки сначала проверяются на техническую стадию, затем делятся по `CLOSED`.
 Техническая сделка не обязательно закрыта. При одной включённой группе

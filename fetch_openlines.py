@@ -3,8 +3,7 @@
 
 Цепочка:
   imopenlines.crm.chat.get   -> чаты сделки (CHAT_ID + тип коннектора)
-  imopenlines.session.history.get -> история сообщений чата
-      (fallback: im.dialog.messages.get, если первый метод недоступен)
+  imopenlines.session.history.get -> все страницы последней сессии чата
 
 Идентификация автора сообщения:
   - senderid есть в справочнике пользователей портала -> менеджер (ФИО из справочника);
@@ -15,6 +14,7 @@
 
 import re
 
+import config
 from api_client import BitrixError
 from logging_setup import log
 
@@ -88,88 +88,103 @@ def get_deal_chats(client, deal_id, entity_type="deal"):
     return chats
 
 
-def get_chat_history(client, chat_id):
+def get_chat_history(client, chat_id, max_pages=None):
     """
-    История сообщений чата открытой линии.
+    Все страницы последней сессии чата открытой линии.
+
+    Предыдущие сессии этот путь не охватывает. Ошибка API на любой странице,
+    некорректный курсор или предел страниц дают BitrixError, а не часть истории.
     Возвращает (messages, users_info):
       messages   — [{'id','sender_id','time','text','params'}] по возрастанию времени
       users_info — {'<id>': {'name':..., 'is_bot': bool}} из ответа API
     """
-    try:
-        res = client.result(
-            "imopenlines.session.history.get", {"CHAT_ID": int(chat_id)}
-        )
-    except BitrixError as e:
-        log.warning(
-            "Чат {}: session.history.get: {}; fallback на im.dialog.messages.get",
-            chat_id,
-            e,
-        )
-        return _history_via_im(client, chat_id)
+    if max_pages is None:
+        max_pages = config.OPENLINES_SESSION_MAX_PAGES
+    if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+        raise ValueError("Предел страниц сессии должен быть положительным целым")
 
-    if not res:
-        return [], {}
+    method = "imopenlines.session.history.get"
+    params = {"CHAT_ID": int(chat_id)}
+    messages, users_info, cursors = {}, {}, set()
+    session_id = None
 
-    raw_msgs = res.get("message") or {}
-    users_info = {}
-    for uid, u in (res.get("users") or {}).items():
-        users_info[str(uid)] = {
-            "name": u.get("name"),
-            "is_bot": bool(u.get("bot")) or bool(u.get("connector")),
-        }
+    def incomplete(reason: str) -> BitrixError:
+        return BitrixError(method, "INCOMPLETE_HISTORY", f"Чат {chat_id}: {reason}")
 
-    messages = []
-    for m in raw_msgs.values():
-        messages.append(
-            {
-                "id": m.get("id"),
-                "sender_id": str(m.get("senderid", "0")),
-                "time": m.get("date"),
-                "text": clean_text(m.get("text") or m.get("textlegacy") or ""),
-                "params": m.get("params") or {},
+    def positive_int(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise TypeError
+        result = int(value)
+        if result < 1:
+            raise ValueError
+        return result
+
+    for _ in range(max_pages):
+        res = client.result(method, dict(params))
+
+        if not isinstance(res, dict):
+            raise incomplete("ожидался объект истории сессии")
+        if session_id is not None:
+            try:
+                same_session = positive_int(res.get("sessionId")) == session_id
+            except (TypeError, ValueError):
+                same_session = False
+            if not same_session:
+                raise incomplete("ответ относится к другой или неизвестной сессии")
+
+        raw_msgs = res.get("message") or {}
+        raw_users = res.get("users") or {}
+        if not isinstance(raw_msgs, dict) or not isinstance(raw_users, dict):
+            raise incomplete("некорректная структура сообщений или пользователей")
+        for uid, u in raw_users.items():
+            if not isinstance(u, dict):
+                raise incomplete("некорректная запись пользователя")
+            users_info[str(uid)] = {
+                "name": u.get("name"),
+                "is_bot": bool(u.get("bot")) or bool(u.get("connector")),
             }
-        )
-    messages.sort(key=lambda x: (x["time"] or "", str(x["id"])))
-    return messages, users_info
-
-
-def _history_via_im(client, chat_id, max_pages=20):
-    """Запасной путь: история через IM API (постранично, от новых к старым)."""
-    messages, users_info = [], {}
-    last_id = None
-    try:
-        for _ in range(max_pages):
-            params = {"DIALOG_ID": f"chat{int(chat_id)}", "LIMIT": 200}
-            if last_id:
-                params["LAST_ID"] = last_id
-            res = client.result("im.dialog.messages.get", params) or {}
-            batch = res.get("messages")
-            if isinstance(batch, dict):
-                batch = list(batch.values())
-            if not batch:
-                break
-            for m in batch:
-                messages.append(
-                    {
-                        "id": m.get("id"),
-                        "sender_id": str(m.get("author_id", "0")),
-                        "time": m.get("date"),
-                        "text": clean_text(m.get("text") or ""),
-                        "params": m.get("params") or {},
-                    }
-                )
-            for u in res.get("users") or []:
-                users_info[str(u.get("id"))] = {
-                    "name": u.get("name"),
-                    "is_bot": bool(u.get("bot")),
-                }
-            last_id = batch[0].get("id")
-            if len(batch) < 50:
-                break
-    except BitrixError as e:
-        log.warning("Чат {}: im.dialog.messages.get: {}", chat_id, e)
-    messages.sort(key=lambda x: (x["time"] or "", str(x["id"])))
-    return messages, users_info
+        for m in raw_msgs.values():
+            try:
+                mid = positive_int(m.get("id"))
+            except (AttributeError, TypeError, ValueError) as e:
+                raise incomplete("некорректный ID сообщения") from e
+            # Сохраняем форму сообщения; числовой ключ исключает дубли int/str.
+            messages.setdefault(
+                mid,
+                {
+                    "id": m.get("id"),
+                    "sender_id": str(m.get("senderid", "0")),
+                    "time": m.get("date"),
+                    "text": clean_text(m.get("text") or m.get("textlegacy") or ""),
+                    "params": m.get("params") or {},
+                },
+            )
+        if res.get("hasNextPage") is False:
+            result = sorted(
+                messages.values(), key=lambda x: (x["time"] or "", int(x["id"]))
+            )
+            return result, users_info
+        if res.get("hasNextPage") is not True:
+            raise incomplete("отсутствует признак завершения страниц hasNextPage")
+        try:
+            if session_id is None:
+                session_id = positive_int(res.get("sessionId"))
+            cursor = (
+                positive_int(res.get("nextId")),
+                positive_int(res.get("nextDate")),
+            )
+        except (TypeError, ValueError) as e:
+            raise incomplete("некорректный sessionId или курсор nextId/nextDate") from e
+        if cursor in cursors:
+            raise incomplete("повтор курсора nextId/nextDate")
+        cursors.add(cursor)
+        # Фиксируем сессию: CHAT_ID на следующей странице может выбрать уже новую.
+        params = {
+            "SESSION_ID": session_id,
+            "LAST_ID": cursor[0],
+            "LAST_DATE": cursor[1],
+        }
+    raise incomplete(f"достигнут предел страниц сессии ({max_pages})")
 
 
 SYSTEM_HINTS = (

@@ -141,6 +141,7 @@ def make_config(root):
         "INCLUDE_TASKS": True,
         "INCLUDE_EMAILS": True,
         "INCLUDE_MEETINGS": True,
+        "OPENLINES_SESSION_MAX_PAGES": 200,
         "DOWNLOAD_RECORDINGS": False,
         "MIN_RECORDING_DURATION_SEC": 15,
         "TRANSCRIBE_ENABLED": True,
@@ -266,7 +267,6 @@ class FakeClient:
         }
         self.fail_ids = set()
         self.omit_closed = False
-        self.chat_fallback = False
         self.bitrix_error = RuntimeError
 
     def ping(self):
@@ -381,9 +381,9 @@ class FakeClient:
         if method == "imopenlines.crm.chat.get":
             return [{"CHAT_ID": "61", "CONNECTOR_ID": "telegrambot"}, {}]
         if method == "imopenlines.session.history.get":
-            if self.chat_fallback:
-                raise self.bitrix_error(method, "DENIED", "Проверка запасного пути")
             return {
+                "sessionId": 321,
+                "hasNextPage": False,
                 "message": {
                     "1": {
                         "id": "1",
@@ -399,13 +399,6 @@ class FakeClient:
                     },
                 },
                 "users": {},
-            }
-        if method == "im.dialog.messages.get":
-            return {
-                "messages": [
-                    {"id": "2", "author_id": "0", "date": ISO, "text": "Ответ клиента"}
-                ],
-                "users": [],
             }
         raise AssertionError(f"Неожиданный метод {method}: {params}")
 
@@ -1063,12 +1056,172 @@ class ExportTests(unittest.TestCase):
         self.cfg.EXPORT_TYPE = "incremental"
         self.assertEqual(self.run_sync()["update_mode"], "FULL")
 
-    def test_chat_fallback_and_empty_group_directories(self):
-        self.client.chat_fallback = True
+    @staticmethod
+    def chat_page(*ids, more=False, next_id=None, next_date=None):
+        """Синтетическая страница документированного ответа истории сессии."""
+        return {
+            "sessionId": 321,
+            "hasNextPage": more,
+            "nextId": next_id,
+            "nextDate": next_date,
+            "message": {
+                str(mid): {"id": mid, "date": ISO, "text": f"Сообщение {mid}"}
+                for mid in ids
+            },
+            "users": {},
+        }
+
+    def test_chat_session_pages_merge_users_deduplicate_and_sort_numeric_ids(self):
+        first = self.chat_page("10", "9", more=True, next_id="9", next_date="100")
+        first["users"] = {"17": {"name": "Менеджер"}}
+        last = self.chat_page(9, "2")
+        last["users"] = {"20": {"name": "Коннектор", "connector": True}}
+        client = Mock()
+        client.result.side_effect = [first, last]
+        messages, users = self.sync.fetch_openlines.get_chat_history(client, "61")
+        self.assertEqual([int(m["id"]) for m in messages], [2, 9, 10])
+        self.assertEqual(users["17"], {"name": "Менеджер", "is_bot": False})
+        self.assertTrue(users["20"]["is_bot"])
+        self.assertEqual(
+            [c.args for c in client.result.call_args_list],
+            [
+                ("imopenlines.session.history.get", {"CHAT_ID": 61}),
+                (
+                    "imopenlines.session.history.get",
+                    {"SESSION_ID": 321, "LAST_ID": 9, "LAST_DATE": 100},
+                ),
+            ],
+        )
+
+    def test_chat_session_short_page_continues_until_explicit_end(self):
+        client = Mock()
+        client.result.side_effect = [
+            self.chat_page("10", more=True, next_id=10, next_date=100),
+            self.chat_page(),
+        ]
+        messages, _ = self.sync.fetch_openlines.get_chat_history(client, 61)
+        self.assertEqual([m["id"] for m in messages], ["10"])
+        self.assertEqual(client.result.call_count, 2)
+
+    def test_chat_session_repeated_cursor_and_page_limit_are_errors(self):
+        page = self.chat_page("10", more=True, next_id=10, next_date=100)
+        for max_pages, calls, reason in (
+            (1, 1, "предел страниц"),
+            (5, 2, "повтор курсора"),
+        ):
+            with self.subTest(max_pages=max_pages):
+                client = Mock()
+                client.result.return_value = page
+                with self.assertRaisesRegex(self.sync.BitrixError, reason):
+                    self.sync.fetch_openlines.get_chat_history(client, 61, max_pages)
+                self.assertEqual(client.result.call_count, calls)
+
+    def test_chat_session_invalid_cursor_and_missing_end_flag_are_errors(self):
+        pages = [
+            None,
+            [],
+            {"message": {}, "users": {}},
+            {**self.chat_page(), "hasNextPage": "false"},
+            {**self.chat_page(), "message": {"bad": {"id": "bad"}}},
+            {**self.chat_page(), "message": ["bad"]},
+            {**self.chat_page(), "users": ["bad"]},
+            {**self.chat_page(), "users": {"17": None}},
+        ]
+        for field in ("nextId", "nextDate", "sessionId"):
+            for value in (None, 0, -1, True, "bad", 1.5):
+                page = self.chat_page("10", more=True, next_id=10, next_date=100)
+                page[field] = value
+                pages.append(page)
+        for page in pages:
+            with self.subTest(page=page):
+                client = Mock()
+                client.result.return_value = page
+                with self.assertRaisesRegex(
+                    self.sync.BitrixError, "INCOMPLETE_HISTORY"
+                ):
+                    self.sync.fetch_openlines.get_chat_history(client, 61)
+                self.assertEqual(client.result.call_count, 1)
+
+    def test_chat_session_change_is_an_error(self):
+        for session_id in (322, None):
+            with self.subTest(session_id=session_id):
+                client = Mock()
+                last = self.chat_page("2")
+                last["sessionId"] = session_id
+                client.result.side_effect = [
+                    self.chat_page("10", more=True, next_id=10, next_date=100),
+                    last,
+                ]
+                with self.assertRaisesRegex(self.sync.BitrixError, "сессии"):
+                    self.sync.fetch_openlines.get_chat_history(client, 61)
+
+    def test_chat_session_api_error_propagates_on_any_page(self):
+        method = "imopenlines.session.history.get"
+        for page_number in (1, 2):
+            with self.subTest(page_number=page_number):
+                client = Mock()
+                failure = self.sync.BitrixError(method, "DENIED")
+                pages = [self.chat_page("10", more=True, next_id=10, next_date=100)]
+                client.result.side_effect = pages[: page_number - 1] + [failure]
+                with self.assertRaises(self.sync.BitrixError) as raised:
+                    self.sync.fetch_openlines.get_chat_history(client, 61)
+                self.assertIs(raised.exception, failure)
+                self.assertEqual(client.result.call_count, page_number)
+                self.assertTrue(
+                    all(c.args[0] == method for c in client.result.call_args_list)
+                )
+
+    def test_chat_session_page_failure_marks_entity_partial_and_retries(self):
+        self.check_chat_session_failure_and_retry(first_page=False)
+
+    def test_chat_session_first_page_failure_marks_entity_partial_and_retries(self):
+        self.check_chat_session_failure_and_retry(first_page=True)
+
+    def check_chat_session_failure_and_retry(self, *, first_page):
+        """Сбой истории не сохраняет сущность, остальные продолжаются; затем повтор."""
+        original = self.client.result
+        session_requests = 0
+
+        def result(method, params=None):
+            nonlocal session_requests
+            if method == "imopenlines.session.history.get":
+                session_requests += 1
+                if session_requests == 2 and not first_page:
+                    return self.chat_page("10", more=True, next_id=10, next_date=100)
+                if session_requests == (2 if first_page else 3):
+                    raise self.sync.BitrixError(method, "DENIED")
+            return original(method, params)
+
+        with patch.object(self.client, "result", side_effect=result):
+            manifest = self.run_sync()
+        self.assertFalse(manifest["is_complete"])
+        self.assertEqual(manifest["errors_count"], 1)
+        self.assertEqual(
+            self.read_json("data/state.json")["errors"], {"deals": [2], "leads": []}
+        )
+        self.assertFalse(self.sync.store.has_deal(2))
+        self.assertEqual(manifest["deals"]["groups"]["technical"]["ids"], [3])
+        self.client.omit_closed = True
+        self.client.trace.clear()
+        self.assertTrue(self.run_sync()["is_complete"])
+        self.assertTrue(self.sync.store.has_deal(2))
+        self.assertTrue(
+            any(p.get("filter", {}).get("@ID") == [2] for _, _, p in self.client.trace)
+        )
+
+    def test_chat_session_invalid_page_limit_fails_before_api(self):
+        for limit in (0, -1, True, 1.5):
+            with self.subTest(limit=limit):
+                client = Mock()
+                with self.assertRaises(ValueError):
+                    self.sync.fetch_openlines.get_chat_history(client, 61, limit)
+                client.result.assert_not_called()
+
+    def test_empty_group_directories_are_archived(self):
         self.cfg.DEALS_LIMIT = self.cfg.LEADS_LIMIT = 1
         self.run_sync()
         md = self.sync.store.load_md(1)
-        self.assertIn("Ответ клиента", md)
+        self.assertIn("Сообщение", md)
         with ZipFile(next((self.root / "export").glob("*.zip"))) as archive:
             for ent in ("Сделки", "Лиды"):
                 self.assertIn(f"{ent}/Завершенные/", archive.namelist())

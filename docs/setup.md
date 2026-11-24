@@ -47,7 +47,7 @@ mise run start
 вместе с остальными зависимостями. `start` запускает `bot.py`; саму выгрузку
 запускает кнопка бота. Задачи setup/test/lint бота не запускают.
 
-Создайте входящий вебхук Bitrix24 с правами `crm`, `im`, `imopenlines`,
+Создайте входящий вебхук Bitrix24 с правами `crm`, `imopenlines`,
 `telephony`, `user`; для задач добавьте `task`. Секреты храните в файле `.env`
 рядом с `config.py`. При импорте `config.py` вызов `load_dotenv()` загружает
 значения из этого файла:
@@ -133,6 +133,7 @@ store, новый snapshot и возможный ZIP. Это не изолиро
 | `EXPORT_PERIOD_FROM`, `EXPORT_PERIOD_TO` | Явный период создания; обе границы `None` |
 | `PROCESS_LEADS`; `PROCESS_ACTIVE/COMPLETED/TECHNICAL` | Лиды и все группы включены |
 | `INCLUDE_COMMENTS/TASKS`; `INCLUDE_EMAILS/MEETINGS` | Комментарии/задачи включены, письма/встречи выключены |
+| `OPENLINES_SESSION_MAX_PAGES` | Не более 200 страниц последней сессии чата; при незавершённой истории — ошибка сущности. [Алгоритм и ограничения](architecture.md#история-открытых-линий) |
 | `TECHNICAL_STAGE_IDS/KEYWORDS`; `LEAD_TECHNICAL_STATUS_IDS/KEYWORDS` | Правила технических стадий/статусов |
 | `EXPORT_TYPE`, `INCREMENTAL_OVERLAP_HOURS` | `auto` / `full` / `incremental`; перекрытие 24 ч |
 | `REEXPORT_CLOSED_ON_CHANGE` | `False`: закрытые переиспользуются даже после изменений |
