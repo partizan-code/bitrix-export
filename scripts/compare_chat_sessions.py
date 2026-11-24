@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+from chat_refresh import load_baseline
+
+
 class ComparisonError(Exception):
     """Неполнота, которую нельзя трактовать как отсутствие сессий."""
 
@@ -120,82 +123,6 @@ def message_key(tp: dict) -> tuple[int, int] | None:
     ):
         return int(source["chat_id"]), int(source["message_id"])
     return None
-
-
-def load_baseline(root: Path) -> dict:
-    """Зафиксировать существующий состав manifest и соответствующие данные store."""
-    manifest = read_json(root / "export/snapshot/manifest.json")
-    baseline = {"manifest": manifest, "entities": {}}
-    stamp(manifest["snapshot_at"])
-    for entity in ("deal", "lead"):
-        block = manifest[f"{entity}s"]
-        base = root / "data/store" / ("lead" if entity == "lead" else "")
-        for group, info in block["groups"].items():
-            ids = {int(i) for i in info["ids"]}
-            if not ids:
-                continue
-            index = read_jsonl(root / "export" / f"index_{entity}_{group}.jsonl")
-            grouped = defaultdict(list)
-            for tp in read_jsonl(
-                root / "export" / f"touchpoints_{entity}_{group}.jsonl"
-            ):
-                grouped[int(tp["deal_id"])].append(tp)
-            for did in sorted(ids):
-                key = (entity, did)
-                if key in baseline["entities"]:
-                    raise ComparisonError("DUPLICATE_ENTITY")
-                row = next(
-                    r for r in index if int(r.get("lead_id", r.get("deal_id"))) == did
-                )
-                tps = read_jsonl(base / "tps" / f"{did}.jsonl")
-                encode = lambda t: json.dumps(t, ensure_ascii=False, sort_keys=True)
-                if (
-                    Counter(map(encode, tps)) != Counter(map(encode, grouped[did]))
-                    or len(tps) != row["touchpoints"]
-                ):
-                    raise ComparisonError("BASELINE_STORE_MISMATCH")
-                deal = read_json(base / "deal" / f"{did}.json")
-                raw = read_json(root / "raw" / f"{entity}_{did}.json")
-                if int(deal["ID"]) != did or int(raw[entity]["ID"]) != did:
-                    raise ComparisonError("BASELINE_ID_MISMATCH")
-                chats = {
-                    int(c["chat"]["chat_id"]): c["chat"]
-                    for c in raw.get("ol_chats", [])
-                }
-                for tp in tps:
-                    mk = message_key(tp)
-                    if mk:
-                        chats.setdefault(
-                            mk[0], {"chat_id": mk[0], "channel": tp["channel"]}
-                        )
-                baseline["entities"][key] = {
-                    "deal": deal,
-                    "tps": tps,
-                    "chats": chats,
-                    "group": group,
-                    "history": raw.get("stage_history", []),
-                }
-        if sum(k[0] == entity for k in baseline["entities"]) != block["total"]:
-            raise ComparisonError("BASELINE_COUNT_MISMATCH")
-    if not baseline["entities"]:
-        raise ComparisonError("EMPTY_BASELINE")
-    baseline["users"] = {
-        int(k): v for k, v in read_json(root / "data/users_cache.json").items()
-    }
-    extra_path = root / "data/users_extra.json"
-    if extra_path.is_file():
-        baseline["users"].update(
-            {int(k): v for k, v in read_json(extra_path).get("resolved", {}).items()}
-        )
-    baseline["stage_books"] = {
-        entity: read_json(root / "data" / file_name)
-        for entity, file_name in (
-            ("deal", "stages.json"),
-            ("lead", "lead_statuses.json"),
-        )
-        if any(key[0] == entity for key in baseline["entities"])
-    }
-    return baseline
 
 
 class BudgetClient:

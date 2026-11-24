@@ -5,6 +5,8 @@
 ## Поток и модули
 
 `sync.main` отклоняет аргументы запуска; параметры берутся только из `config.py`.
+Основной прогон и обновление переписок берут общий `data/workspace.lock`
+до запросов и записи: параллельный писатель получает `WORKSPACE_BUSY`.
 Затем загружает справочники/state, выбирает режим, создаёт `ExportContext`
 и очищает snapshot. Для каждой сущности `run_entity` выбирает обработку или
 перенос; `process_entity` собирает источники → нормализует → сохраняет raw,
@@ -28,6 +30,8 @@ ZIP (если включён и результат непустой), прогр
 | [scripts/diag_download.py](../scripts/diag_download.py) | Ограниченная диагностика чтения аудио через `transcribe.probe_recording`, HTTP Range и curl; отдельный безопасный лог |
 | [scripts/diag_fields.py](../scripts/diag_fields.py), [scripts/diag_filter.py](../scripts/diag_filter.py) | Ручная диагностика метаданных и выборки через API |
 | [scripts/refresh_names.py](../scripts/refresh_names.py), [scripts/recover_registry.py](../scripts/recover_registry.py) | Ручное обновление имён и восстановление реестра |
+| [chat_refresh.py](../chat_refresh.py), [scripts/refresh_chats.py](../scripts/refresh_chats.py) | Загрузка согласованного сохранённого снимка, подготовка нового слоя ОЛ и ZIP/SQLite, проверка SHA-256, применение с backup/журналом и откат; CLI без аргументов только читает |
+| [workspace_lock.py](../workspace_lock.py) | Общая блокировка sync и обновления переписок через эксклюзивное создание файла, без отправки сигналов процессам |
 | [normalize.py](../normalize.py) | Схема касания, события стадий |
 | [store.py](../store.py), [registry.py](../registry.py) | Артефакты и переиспользование |
 | [export_llm.py](../export_llm.py) | JSONL, Markdown, manifest, ZIP, имена/время снимка |

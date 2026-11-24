@@ -49,6 +49,8 @@ PROJECT_MODULES = (
     "sync",
     "transcribe",
     "users",
+    "chat_refresh",
+    "workspace_lock",
 )
 
 
@@ -495,6 +497,7 @@ class ExportTests(unittest.TestCase):
             "import_snapshot",
             "source_sqlite",
             "snapshot_sqlite",
+            "refresh_chats",
         ):
             path = ROOT / "scripts" / f"{name}.py"
             arguments = [str(path)]
@@ -503,6 +506,7 @@ class ExportTests(unittest.TestCase):
                 "import_snapshot",
                 "source_sqlite",
                 "snapshot_sqlite",
+                "refresh_chats",
             }:
                 arguments.append("--help")
             with (
@@ -1285,6 +1289,325 @@ class ExportTests(unittest.TestCase):
             client.result.return_value = {"sessions": [row], "hasNextPage": False}
             with self.subTest(row=row), self.assertRaises(module.SessionListError):
                 module.collect_sessions(client, module.stamp(ISO))
+
+    def prepare_chat_update(self, *, missing=False, denied=False, supplemental=False):
+        """Старый снимок со служебной строкой; новая история содержит старую сессию."""
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = True
+        with patch.object(
+            self.sync.fetch_openlines, "is_system_message", return_value=False
+        ):
+            self.run_sync()
+        module = importlib.import_module("chat_refresh")
+        output = self.root / "data/chat_refresh/refresh_test"
+        databases = ["data/sqlite3_snapshots.db"]
+        if supplemental:
+            import source_sqlite
+            from import_snapshot import import_snapshot
+
+            manifest = self.read_json("export/snapshot/manifest.json")
+            metadata = {
+                entity: self.read_json(f"data/{entity}_fields_meta.json")
+                for entity in ("deal", "lead")
+            }
+            source_sqlite.write_snapshot(
+                self.root / "data/sqlite3_structured.db",
+                manifest,
+                lambda: source_sqlite.store_records(
+                    self.root / "data", self.root / "export", manifest
+                ),
+                metadata,
+            )
+            import_snapshot(
+                next((self.root / "export").glob("*.zip")),
+                self.root / "data/sqlite3.db",
+            )
+            databases += ["data/sqlite3_structured.db", "data/sqlite3.db"]
+        # Рендер не должен менять шапку даже при обновившемся локальном справочнике.
+        users = self.read_json("data/users_cache.json")
+        users["42"]["name"] = "Новое имя ответственного"
+        self.write_json("data/users_cache.json", users)
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        original = self.client.result
+        sessions = [
+            {"id": sid, "chatId": 61, "dateCreate": "2026-11-01T00:00:00+03:00"}
+            for sid in (319, 321)
+        ]
+        pages = self.session_compare_source(self.sync.fetch_openlines, sessions)
+        client = Mock()
+
+        def result(method, params=None):
+            if method == self.sync.fetch_openlines.SESSION_LIST:
+                return pages(method, params)
+            if method == "imopenlines.session.history.get":
+                if denied:
+                    raise self.sync.BitrixError(
+                        method, "ACCESS_DENIED", "https://example.invalid/private-value"
+                    )
+                if params["SESSION_ID"] == 319:
+                    page = self.chat_page("3")
+                    page.update(chatId=61, sessionId=319)
+                    page["message"]["3"]["senderid"] = "17"
+                    return page
+                page = original(method, params)
+                page["message"]["1"]["text"] = "Уточнённое сообщение"
+                if missing:
+                    page["message"].pop("1")
+                return page
+            if method != "imopenlines.crm.chat.get":
+                raise AssertionError(f"Посторонний источник: {method}")
+            return original(method, params)
+
+        client.result.side_effect = result
+        report = module.prepare(self.root, output, client, databases=databases)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+        self.assertNotIn("private-value", json.dumps(report))
+        return module, output, report, before
+
+    def test_refresh_chats_prepare_apply_and_rollback_preserve_other_data(self):
+        module, output, report, before = self.prepare_chat_update()
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(
+            report["summary"],
+            {
+                "added": 6,
+                "changed": 6,
+                "removed_service": 6,
+                "missing": 0,
+                "entities": 6,
+            },
+        )
+        old_tps = {
+            (entity, did): self.sync.store.load_tps(did, entity=entity)
+            for entity in ("deal", "lead")
+            for did in (1, 2, 3)
+        }
+        old_md = {
+            key: self.sync.store.load_md(key[1], entity=key[0]) for key in old_tps
+        }
+        self.assertEqual(module.apply(self.root, output)["status"], "applied")
+        self.assertEqual(module.apply(self.root, output)["status"], "applied")
+        self.assertEqual(
+            (self.root / "data/state.json").read_bytes(),
+            before[self.root / "data/state.json"],
+        )
+        for (entity, did), old in old_tps.items():
+            tps = self.sync.store.load_tps(did, entity=entity)
+            self.assertEqual(
+                [t for t in tps if not module.message_key(t)],
+                [t for t in old if not module.message_key(t)],
+            )
+            self.assertEqual(
+                {int(t["source"]["message_id"]) for t in tps if module.message_key(t)},
+                {1, 3},
+            )
+            self.assertEqual(
+                self.read_json(f"raw/{entity}_{did}.json")["ol_chats"][0][
+                    "session_ids"
+                ],
+                [319, 321],
+            )
+            self.assertEqual(
+                self.sync.store.load_md(did, entity=entity).split("## Лента касаний")[
+                    0
+                ],
+                old_md[entity, did].split("## Лента касаний")[0],
+            )
+        with closing(sqlite3.connect(self.cfg.SNAPSHOT_SQLITE_PATH)) as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM snapshots").fetchone(), (2,)
+            )
+        manifest = self.read_json("export/snapshot/manifest.json")
+        self.assertEqual(manifest["update_mode"], "CHAT_REFRESH")
+        self.assertEqual(manifest["deals"]["total"], 3)
+        self.assertTrue((self.root / report["archive"]).is_file())
+        self.assertEqual(module.rollback(self.root, output)["status"], "rolled_back")
+        self.assertEqual(module.rollback(self.root, output)["status"], "rolled_back")
+        actual = {
+            p: p.read_bytes()
+            for p in self.root.rglob("*")
+            if p.is_file() and not p.is_relative_to(output)
+        }
+        self.assertEqual(actual, before)
+
+    def test_refresh_chats_blocks_missing_message_and_api_denial(self):
+        module, output, report, before = self.prepare_chat_update(missing=True)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["summary"]["missing"], 6)
+        with self.assertRaisesRegex(module.RefreshError, "PREPARATION_NOT_READY"):
+            module.apply(self.root, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_blocks_api_denial_without_data_loss(self):
+        module, output, report, before = self.prepare_chat_update(denied=True)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual({e["code"] for e in report["errors"]}, {"ACCESS_DENIED"})
+        with self.assertRaises(module.RefreshError):
+            module.apply(self.root, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_refuses_stale_sources_and_modified_candidate(self):
+        module, output, report, before = self.prepare_chat_update()
+        path = self.root / "data/state.json"
+        original = path.read_bytes()
+        path.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(module.RefreshError, "SOURCES_CHANGED"):
+            module.apply(self.root, output)
+        path.write_bytes(original)
+        target = next(op for op in report["operations"] if op["after"] is not None)
+        (output / "candidate" / target["path"]).write_bytes(b"tampered")
+        with self.assertRaisesRegex(module.RefreshError, "CANDIDATE_CHANGED"):
+            module.apply(self.root, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_apply_failure_rolls_back_and_can_retry(self):
+        module, output, _, before = self.prepare_chat_update()
+        copy_file = module.atomic_copy
+        failed = False
+
+        def fail_once(source, target):
+            nonlocal failed
+            if target == self.root / "data/store/tps/2.jsonl" and not failed:
+                failed = True
+                raise OSError("synthetic")
+            return copy_file(source, target)
+
+        with (
+            patch.object(module, "atomic_copy", side_effect=fail_once),
+            self.assertRaises(OSError),
+        ):
+            module.apply(self.root, output)
+        self.assertTrue(failed)
+        self.assertEqual(
+            module.read_json(output / "journal.json")["status"], "rolled_back"
+        )
+        actual = {
+            p: p.read_bytes()
+            for p in self.root.rglob("*")
+            if p.is_file() and not p.is_relative_to(output)
+        }
+        self.assertEqual(actual, before)
+        self.assertEqual(module.apply(self.root, output)["status"], "applied")
+        path = self.root / "data/state.json"
+        path.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(module.RefreshError, "SOURCES_CHANGED_AFTER_APPLY"):
+            module.rollback(self.root, output)
+
+    def test_refresh_chats_cli_plan_is_read_only_and_offline_commands_need_no_config(
+        self,
+    ):
+        module, output, _, before = self.prepare_chat_update()
+        with patch.dict(sys.modules, {"config": None}), redirect_stdout(io.StringIO()):
+            self.assertEqual(module.main([], root=self.root), 0)
+            self.assertEqual(module.main(["--apply", str(output)], root=self.root), 0)
+            self.assertEqual(
+                module.main(["--rollback", str(output)], root=self.root), 0
+            )
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_updates_optional_sqlite_databases_and_rolls_back(self):
+        module, output, report, before = self.prepare_chat_update(supplemental=True)
+        self.assertEqual(report["status"], "ready", report["errors"])
+        module.apply(self.root, output)
+        for name in report["databases"]:
+            with closing(sqlite3.connect(self.root / name)) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM snapshots").fetchone(), (2,)
+                )
+        module.rollback(self.root, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_interrupted_apply_requires_rollback(self):
+        module, output, report, before = self.prepare_chat_update()
+        # Имитировать завершённые резервные копии и одну запись до аварии процесса.
+        for op in report["operations"]:
+            if op["before"] is not None:
+                module.atomic_copy(
+                    self.root / op["path"], output / "backup" / op["path"]
+                )
+        op = next(op for op in report["operations"] if op["after"] is not None)
+        module.atomic_copy(output / "candidate" / op["path"], self.root / op["path"])
+        module.save_json(output / "journal.json", {"status": "applying"})
+        with self.assertRaisesRegex(module.RefreshError, "ROLLBACK_REQUIRED"):
+            module.apply(self.root, output)
+        module.rollback(self.root, output)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_refresh_chats_rejects_path_escape_and_busy_sqlite(self):
+        module, output, _, _ = self.prepare_chat_update()
+        report = module.read_json(output / "report.json")
+        report["operations"][0]["path"] = "../config.py"
+        module.save_json(output / "report.json", report)
+        with self.assertRaisesRegex(module.RefreshError, "UNSAFE_PATH"):
+            module.apply(self.root, output)
+        wal = self.root / "data/sqlite3_snapshots.db-wal"
+        wal.write_bytes(b"busy")
+        client = Mock()
+        with self.assertRaisesRegex(module.RefreshError, "SQLITE_BUSY"):
+            module.prepare(
+                self.root, output, client, databases=["data/sqlite3_snapshots.db"]
+            )
+        client.result.assert_not_called()
+
+    def test_refresh_chats_cli_prepare_closes_client_and_keeps_shared_logs(self):
+        self.run_sync()
+        module = importlib.import_module("chat_refresh")
+        client = Mock()
+        client.result.side_effect = self.client.result
+        for filename in ("debug.log", "error.log"):
+            (self.root / filename).write_text("before", encoding="utf-8")
+        with (
+            patch("api_client.B24Client", return_value=client),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(module.main(["--prepare"], root=self.root), 0)
+        client.session.close.assert_called_once()
+        for filename in ("debug.log", "error.log"):
+            self.assertEqual((self.root / filename).read_text(), "before")
+        runs = list((self.root / "data/chat_refresh").iterdir())
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(module.read_json(runs[0] / "report.json")["status"], "ready")
+        self.assertFalse((self.root / "data/workspace.lock").exists())
+
+    def test_refresh_chats_refuses_wrong_portal_before_api(self):
+        self.run_sync()
+        module = importlib.import_module("chat_refresh")
+        self.cfg.PORTAL_URL = "https://another.invalid"
+        client = Mock()
+        with self.assertRaisesRegex(module.RefreshError, "PORTAL_MISMATCH"):
+            module.prepare(self.root, self.root / "data/chat_refresh/check", client)
+        client.result.assert_not_called()
+
+    def test_refresh_chats_keeps_crlf_header_and_fields(self):
+        self.run_sync()
+        module = importlib.import_module("chat_refresh")
+        original = (
+            self.sync.store.load_md(1).replace("\r\n", "\n").replace("\n", "\r\n")
+        )
+        rendered = (
+            original.replace("\r\n", "\n")
+            .replace("- Ответственный:", "- Другой ответственный:")
+            .replace("  Сообщение", "  Изменённое сообщение")
+        )
+        refreshed = module.timeline_only(original, rendered, "deal")
+        self.assertEqual(
+            refreshed.split("## Лента касаний")[0],
+            original.split("## Лента касаний")[0],
+        )
+        self.assertEqual(
+            refreshed.split("## Поля сделки")[1], original.split("## Поля сделки")[1]
+        )
+        self.assertIn("Изменённое сообщение", refreshed)
+        self.assertEqual(refreshed.count("\n"), refreshed.count("\r\n"))
+
+    def test_workspace_lock_blocks_sync_before_api(self):
+        lock = importlib.import_module("workspace_lock")
+        with (
+            lock.exclusive_workspace(Path(self.cfg.DATA_DIR)),
+            self.assertRaisesRegex(RuntimeError, "WORKSPACE_BUSY"),
+        ):
+            self.run_sync()
+        self.assertEqual(self.client.trace, [])
+        self.assertFalse((self.root / "data/workspace.lock").exists())
 
     def test_chat_system_templates_and_existing_filters(self):
         texts = (

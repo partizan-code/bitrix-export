@@ -55,6 +55,7 @@ from users import (
     load_users,
     source_name,
 )
+from workspace_lock import exclusive_workspace
 
 # параметры сущностей: различия сделка/лид собраны здесь
 _ENTITY = {
@@ -597,13 +598,18 @@ def run_entity(
 # ---------------------------------------------------------------- main
 @profile_run
 def main():
-    t0 = perf_counter()
     if len(sys.argv) > 1:
         raise SystemExit(
             "sync.py не принимает аргументы. Задайте параметры в config.py "
             "и запустите выгрузку кнопкой бота или командой python sync.py."
         )
+    with exclusive_workspace(Path(config.DATA_DIR)):
+        return _main()
 
+
+def _main():
+    """Выполнить выгрузку под общей блокировкой рабочих данных."""
+    t0 = perf_counter()
     # тестовый запуск (конкретные ID или лимит) — всегда полный режим
     # и не является якорем инкремента (state.json/registry не обновляются)
     deal_test = bool(config.DEAL_IDS or config.DEALS_LIMIT)

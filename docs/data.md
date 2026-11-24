@@ -388,6 +388,15 @@ ZIP-сжатие: с ростом истории размер увеличива
 сессия не меняет формат касания, JSONL и Markdown.
 [Доступность и ограничения полноты](architecture.md#история-открытых-линий).
 
+Для [обновления уже сохранённых переписок](operations.md#обновление-сохранённых-переписок)
+предусмотрен `scripts/refresh_chats.py`. Его manifest имеет
+`update_mode=CHAT_REFRESH`: состав карточек берётся из исходного manifest,
+все переписки перечитываются, поля CRM и прочие касания сохраняются.
+`snapshot_at` — время новой сборки; прежняя дата CRM остаётся в
+`chat_refresh.crm_snapshot_at` и исходном coverage. Якорь `state.last_run`
+не продвигается. Registry выбранных карточек указывает новый export_id,
+чтобы индексы и структурированные источники оставались согласованными.
+
 - `channel`: `call`, код ОЛ (`viber`, `telegram`, `whatsapp`, `site_chat`, `vk`,
   `instagram`, `facebook`, `avito`, `olx` и др.), `comment`, `email`, `meeting`, `task`, `crm`.
 - `event_type`: `call`, `message`, `comment`, `email`, `meeting`, `task`, `stage_change`.
