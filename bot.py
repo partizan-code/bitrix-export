@@ -27,7 +27,7 @@ from aiogram.types import (
     Message,
 )
 
-import config  # загружает .env и даёт пути DATA_DIR/EXPORT_DIR
+import config  # загружает .env / .env.dev и даёт пути DATA_DIR/EXPORT_DIR
 from logging_setup import log, run_cli
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -235,11 +235,12 @@ async def on_run(q: CallbackQuery):
 def main():
     if not TOKEN:
         raise SystemExit(
-            "Не задан TG_BOT_TOKEN. Укажите его в файле .env рядом с config.py."
+            "Не задан TG_BOT_TOKEN. Укажите его в .env (для разработки — .env.dev) "
+            "рядом с config.py."
         )
     if not ALLOWED:
         raise SystemExit(
-            "Не задан TG_CHAT_ID. Укажите его в файле .env "
+            "Не задан TG_CHAT_ID. Укажите его в .env (для разработки — .env.dev) "
             "рядом с config.py — "
             "без него кнопкой мог бы воспользоваться любой"
         )

@@ -56,6 +56,10 @@ mise run setup
 mise run start
 ```
 
+Для локальной разработки с отдельным Telegram-ботом заполните `.env.dev`
+по образцу [.env.dev.example](.env.dev.example) и используйте `mise run start-dev`.
+[Приоритет настроек и границы изоляции](docs/setup.md#локальный-тестовый-telegram-бот).
+
 Изолированные тесты — `mise run test`, линтинг — `mise run lint`, проверка
 форматирования — `mise run format-check`. Python и uv выбирает mise,
 зависимости и `.venv/` обслуживает uv по `pyproject.toml` и `uv.lock`.

@@ -17,6 +17,11 @@ run = "uv sync --locked"
 description = "Запустить Telegram-бота управления выгрузкой"
 run = "uv run --locked python bot.py"
 
+[tasks.start-dev]
+description = "Запустить тестового Telegram-бота с .env.dev"
+env = { BITRIX_ENV = "dev" }
+run = "uv run --locked python bot.py"
+
 [tasks.test]
 description = "Запустить изолированные тесты без API и рабочих данных"
 run = "uv run --locked python -B -m unittest discover -s tests -v"

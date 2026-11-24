@@ -1,22 +1,44 @@
 #!/usr/bin/env python3
 """Настройки выгрузки Bitrix24; команды запуска — в docs/setup.md.
 
-Секреты B24_WEBHOOK и ASSEMBLYAI_API_KEY задаются в окружении или .env рядом
-с этим файлом. Права вебхука: crm, im, imopenlines, telephony, user;
+Секреты задаются в окружении или .env рядом с этим файлом. При BITRIX_ENV=dev
+сначала загружается .env.dev с реквизитами тестового Telegram-бота.
+Права вебхука: crm, im, imopenlines, telephony, user;
 для INCLUDE_TASKS также нужен task.
 
-При импорте загружается .env и создаются рабочие каталоги.
+При импорте загружаются настройки окружения и создаются рабочие каталоги.
 """
 
 import os
 
-# .env дополняет окружение, не заменяя уже заданные переменные.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENVIRONMENT = os.environ.get("BITRIX_ENV", "production")
+if ENVIRONMENT not in {"production", "dev"}:
+    raise ValueError("BITRIX_ENV должен быть production или dev")
+
+# Приоритет: окружение процесса > .env.dev (только dev) > .env.
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    if ENVIRONMENT == "dev":
+        _dev_env = os.path.join(BASE_DIR, ".env.dev")
+        if not os.path.isfile(_dev_env):
+            raise FileNotFoundError(
+                "Для BITRIX_ENV=dev нужен .env.dev рядом с config.py"
+            )
+        load_dotenv(_dev_env)
+        if not all(
+            os.environ.get(key, "").strip() for key in ("TG_BOT_TOKEN", "TG_CHAT_ID")
+        ):
+            raise ValueError(
+                "Задайте TG_BOT_TOKEN и TG_CHAT_ID в .env.dev или окружении"
+            )
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
 except ImportError:
-    pass
+    if ENVIRONMENT == "dev":
+        raise RuntimeError(
+            "Для .env.dev установите зависимости: mise run setup"
+        ) from None
 
 # Доступ и ссылки на портал
 WEBHOOK_URL = os.environ.get("B24_WEBHOOK")
@@ -135,7 +157,6 @@ MAX_RETRIES = 5  # максимум попыток запроса к Bitrix24
 REQUEST_TIMEOUT = 60  # тайм-аут HTTP-запроса, с
 
 # Пути относительно каталога проекта
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEBUG_LOG_PATH = os.path.join(BASE_DIR, "debug.log")  # DEBUG и выше, включая ошибки
 ERROR_LOG_PATH = os.path.join(BASE_DIR, "error.log")  # только ERROR и CRITICAL
 DATA_DIR = os.path.join(BASE_DIR, "data")  # кэши, состояние синхронизации

@@ -11,6 +11,7 @@ venv/
 .mise-cache/
 mise.local.toml
 .env
+.env.dev
 
 # Telegram / Google
 *.json
