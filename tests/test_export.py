@@ -1290,6 +1290,51 @@ class ExportTests(unittest.TestCase):
             with self.subTest(row=row), self.assertRaises(module.SessionListError):
                 module.collect_sessions(client, module.stamp(ISO))
 
+    def test_chat_jsonl_readers_preserve_unicode_separators(self):
+        rows = [
+            {"id": 1, "text": "Сообщение\u0085продолжение\u2028строка\u2029абзац"},
+            {"id": 2, "text": "Вторая запись\nс обычным переносом"},
+        ]
+        path = self.root / "messages.jsonl"
+        readers = (
+            importlib.import_module("chat_refresh").read_jsonl,
+            load_script("compare_chat_sessions").read_jsonl,
+        )
+        for newline in ("\n", "\r\n"):
+            for final_newline in (False, True):
+                content = newline.join(
+                    [
+                        "",
+                        json.dumps(rows[0], ensure_ascii=False),
+                        " \t",
+                        json.dumps(rows[1], ensure_ascii=False),
+                    ]
+                ) + (newline if final_newline else "")
+                data = content.encode("utf-8")
+                path.write_bytes(data)
+                for reader in readers:
+                    with self.subTest(
+                        reader=reader.__module__,
+                        newline=repr(newline),
+                        final_newline=final_newline,
+                    ):
+                        self.assertEqual(reader(path), rows)
+                        self.assertEqual(path.read_bytes(), data)
+
+    def test_chat_jsonl_readers_reject_truncated_json(self):
+        path = self.root / "truncated.jsonl"
+        data = '{"id": 1}\n{"text": "Оборванное сообщение'.encode()
+        path.write_bytes(data)
+        readers = (
+            importlib.import_module("chat_refresh").read_jsonl,
+            load_script("compare_chat_sessions").read_jsonl,
+        )
+        for reader in readers:
+            with self.subTest(reader=reader.__module__):
+                with self.assertRaises(json.JSONDecodeError):
+                    reader(path)
+                self.assertEqual(path.read_bytes(), data)
+
     def prepare_chat_update(self, *, missing=False, denied=False, supplemental=False):
         """Старый снимок со служебной строкой; новая история содержит старую сессию."""
         self.cfg.SNAPSHOT_SQLITE_ENABLED = True

@@ -44,11 +44,9 @@ def read_json(path: Path):
 
 def read_jsonl(path: Path) -> list[dict]:
     """Прочитать касания и индекс сохранённого снимка."""
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    # splitlines() разрывает также Unicode-разделители внутри строк JSON.
+    with path.open(encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
 def atomic_bytes(path: Path, value: bytes) -> None:
