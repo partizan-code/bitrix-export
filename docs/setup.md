@@ -97,11 +97,88 @@ ZIP заменяется локально атомарно. Требуется �
 локальной выгрузки. Без нового ZIP или при ошибке импорта SQLite загрузки нет.
 Запуски с лимитами/ID также отправляют базу, если оба этапа включены.
 
+При разовом вызове `google_api.upload_database` в отдельном Python-процессе
+Loguru выводит в консоль (stderr) этапы копирования SQLite, сжатия, создания
+клиента, поиска файла и процент загрузки каждой части, включая итоговые 100%.
+При сбое сообщения Loguru содержат тип исключения и HTTP-код без ответа Google
+и секретов; исключение передаётся вызывающему коду. Необработанное исключение
+Python дополнительно выводит стандартным traceback. В штатном запуске через `run_cli`
+эти сообщения попадают в общие файлы логов. Импорт логгера сам по себе
+не загружает `config.py` или `.env`.
+Итоговые 100% означают подтверждённое Drive завершение запроса; до подтверждения
+процент ограничен 99%. Для ZIP меньше 8 МиБ обычно видны только 0% и 100%.
+
 Сервисный аккаунт не создаёт новые файлы: для него нет личной квоты Drive.
 Если архив удалён, восстановите его от имени пользователя и предоставьте
 сервисному аккаунту доступ. [Ограничение Google](https://developers.google.com/workspace/drive/api/guides/folder),
 [обновление файла](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update),
 [загрузка частями](https://developers.google.com/workspace/drive/api/guides/manage-uploads).
+
+#### Разовая отправка без выгрузки Bitrix24
+
+Выполняйте разовую отправку после завершения работающей выгрузки. Пример ниже
+берёт уже имеющуюся базу `export/database/sqlite3_snapshots.db`, упаковывает её
+в ZIP рядом и заменяет архив в целевой папке Drive. Этот файл базы должен
+существовать; штатный `sync.py` сохраняет базу в `SNAPSHOT_SQLITE_PATH`
+(`data/sqlite3_snapshots.db`), а в `export/database/` создаёт только ZIP.
+Для отправки штатной базы замените первый аргумент `upload_database` на
+`Path(config.SNAPSHOT_SQLITE_PATH)`.
+
+Из корня проекта в bash/zsh на macOS/Linux:
+
+```bash
+mise exec -- uv run --no-sync python -B - <<'PY'
+from pathlib import Path
+import config
+from google_api import upload_database
+
+folder = Path(config.EXPORT_DIR) / "database"
+file_id = upload_database(
+    folder / "sqlite3_snapshots.db",
+    folder / config.GOOGLE_DRIVE_ARCHIVE_NAME,
+    credentials_path=Path(config.GOOGLE_DRIVE_CREDENTIALS_PATH),
+    folder_id=config.GOOGLE_DRIVE_FOLDER_ID,
+    timeout=config.GOOGLE_DRIVE_TIMEOUT,
+    retries=config.GOOGLE_DRIVE_MAX_RETRIES,
+)
+print(f"Загружено успешно. ID файла: {file_id}")
+PY
+```
+
+В Windows PowerShell тот же Python-код между маркерами `PY` передайте через
+here-string: `@'` на отдельной строке, затем код, затем
+`'@ | mise exec -- uv run --no-sync python -B -` на отдельной строке.
+
+Команда использует ключ и настройки из config, вызывает Google Drive API
+и заменяет удалённый файл. Bitrix24, AssemblyAI и бот не запускаются;
+state/registry и `progress.json` не обновляются. Прямой вызов функции отправляет
+архив независимо от `GOOGLE_DRIVE_ENABLED`: этот флаг проверяется в `sync.py`.
+`--no-sync` использует уже установленное окружение без изменения зависимостей.
+ZIP остаётся локально для повторной отправки. Для отправки готового ZIP без
+новой архивации доступны `create_drive_service` и `replace_archive` из
+[google_api.py](../google_api.py); клиент нужно закрывать через `contextlib.closing`.
+
+#### Диагностика HTTP 403
+
+`403 Forbidden` означает отказ операции. Drive также возвращает этот код
+при некоторых ограничениях и превышении квот; точная причина определяется
+по полю `reason` ответа Google. [Причины 403](https://developers.google.com/workspace/drive/api/guides/handle-errors#403_errors).
+Безопасные логи приложения показывают тип исключения и HTTP-код, поэтому
+одного числа 403 недостаточно для точного диагноза.
+
+Проверьте доступ редактора для аккаунта из `client_email` в `key.json` к папке
+и существующему ZIP, а также включение Google Drive API в проекте этого ключа.
+Последний этап лога помогает определить отказавшую операцию:
+
+| Последняя строка этапа | Что проверять |
+|---|---|
+| «ищу существующий архив» | Доступ к списку файлов, настройки API и ограничения проекта |
+| «архив найден; загрузка 0%» или промежуточный процент | Право изменять найденный ZIP и ограничения загрузки |
+
+Сообщение «клиент готов» означает создание клиента; первый запрос Drive
+выполняется при поиске файла. Чтение файла или списка само по себе не
+подтверждает право редактирования. Ключ, токены и полный авторизованный URL
+не включайте в диагностические сообщения.
 
 ### Локальный тестовый Telegram-бот
 

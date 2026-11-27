@@ -13,6 +13,8 @@ from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+from logging_setup import log
+
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
@@ -23,6 +25,10 @@ def make_database_zip(database_path: Path, archive_path: Path) -> Path:
         raise FileNotFoundError("База SQLite для загрузки отсутствует")
     if database_path.resolve() == archive_path.resolve():
         raise ValueError("Пути базы и ZIP должны различаться")
+    log.info(
+        "SQLite: создаю согласованную копию базы ({:.2f} МиБ)",
+        database_path.stat().st_size / 1024**2,
+    )
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".drive-", dir=archive_path.parent) as directory:
         snapshot = Path(directory) / database_path.name
@@ -33,24 +39,29 @@ def make_database_zip(database_path: Path, archive_path: Path) -> Path:
             closing(sqlite3.connect(snapshot)) as target,
         ):
             source.backup(target)
+        log.info("SQLite: копия готова; сжимаю базу в ZIP")
         temporary_zip = Path(directory) / "database.zip"
         with ZipFile(temporary_zip, "w", compression=ZIP_DEFLATED) as archive:
             archive.write(snapshot, arcname=database_path.name)
         os.replace(temporary_zip, archive_path)
+    log.info("ZIP готов: {:.2f} МиБ", archive_path.stat().st_size / 1024**2)
     return archive_path
 
 
 def create_drive_service(credentials_path: Path, timeout: int = 60):
     """Создать клиент с ключом сервисного аккаунта и ограниченным HTTP-ожиданием."""
+    log.info("Google Drive: читаю ключ сервисного аккаунта и создаю клиент")
     credentials = Credentials.from_service_account_file(
         str(credentials_path), scopes=SCOPES
     )
     http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout))
     try:
-        return build("drive", "v3", http=http, cache_discovery=False)
+        service = build("drive", "v3", http=http, cache_discovery=False)
     except Exception:
         http.close()
         raise
+    log.info("Google Drive: клиент готов")
+    return service
 
 
 def _query_literal(value: str) -> str:
@@ -70,6 +81,7 @@ def replace_archive(
         "and mimeType != 'application/vnd.google-apps.folder'"
     )
     matches, tokens, token = [], set(), None
+    log.info("Google Drive: ищу существующий архив в целевой папке")
     while True:
         page = files.list(
             q=query,
@@ -107,9 +119,17 @@ def replace_archive(
             fields="id",
             supportsAllDrives=True,
         )
+        log.info(
+            "Google Drive: архив найден; загрузка 0% ({:.2f} МиБ)",
+            media.size() / 1024**2,
+        )
         result = None
         while result is None:
-            _, result = request.next_chunk(num_retries=retries)
+            status, result = request.next_chunk(num_retries=retries)
+            if status is not None and result is None:
+                percent = min(int(status.progress() * 100), 99)
+                log.info("Google Drive: загрузка {}%", percent)
+    log.info("Google Drive: загрузка 100%; существующий архив обновлён")
     return result["id"]
 
 
@@ -123,6 +143,17 @@ def upload_database(
     retries: int = 3,
 ) -> str:
     """Упаковать БД и заменить архив на Drive; при ошибке оставить локальный ZIP."""
-    archive_path = make_database_zip(database_path, archive_path)
-    with closing(create_drive_service(credentials_path, timeout)) as service:
-        return replace_archive(service, archive_path, folder_id, retries)
+    log.info("Начинаю архивацию SQLite и загрузку на Google Drive")
+    try:
+        archive_path = make_database_zip(database_path, archive_path)
+        with closing(create_drive_service(credentials_path, timeout)) as service:
+            return replace_archive(service, archive_path, folder_id, retries)
+    except Exception as error:
+        # Не выводить ответ Google, содержимое ключа и авторизованные URL.
+        status = getattr(getattr(error, "resp", None), "status", None)
+        log.error(
+            "Архивация/загрузка прервана: {} (HTTP {})",
+            type(error).__name__,
+            status if isinstance(status, int) else "—",
+        )
+        raise

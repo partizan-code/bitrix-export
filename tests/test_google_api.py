@@ -1,5 +1,7 @@
 """Проверки ZIP SQLite и Google Drive на временных данных, без ключа и сети."""
 
+import importlib.util
+import io
 import sqlite3
 import sys
 import tempfile
@@ -23,6 +25,9 @@ class GoogleDriveTests(unittest.TestCase):
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.database = self.root / "история.db"
         self.archive = self.root / "export" / "sqlite3_snapshots.zip"
+        self.logs = io.StringIO()
+        sink = google_api.log.add(self.logs, format="{message}")
+        self.addCleanup(google_api.log.remove, sink)
         for target in ("socket.socket.connect", "socket.getaddrinfo"):
             self.stack.enter_context(
                 patch(target, side_effect=AssertionError("Сеть запрещена"))
@@ -40,7 +45,7 @@ class GoogleDriveTests(unittest.TestCase):
             "files": [{"id": "old-id"}]
         }
         self.files.update.return_value.next_chunk.side_effect = [
-            (Mock(), None),
+            (Mock(progress=Mock(return_value=0.5)), None),
             (None, {"id": "old-id"}),
         ]
 
@@ -76,6 +81,10 @@ class GoogleDriveTests(unittest.TestCase):
                 connection.execute("PRAGMA journal_mode").fetchone(), ("wal",)
             )
         self.assertFalse(list(self.archive.parent.glob(".drive-*")))
+        messages = self.logs.getvalue()
+        self.assertIn("создаю согласованную копию", messages)
+        self.assertIn("сжимаю базу в ZIP", messages)
+        self.assertIn("ZIP готов:", messages)
 
     def test_missing_or_invalid_database_preserves_previous_archive(self):
         self.archive.parent.mkdir()
@@ -141,6 +150,11 @@ class GoogleDriveTests(unittest.TestCase):
         )
         self.files.create.assert_not_called()
         self.files.delete.assert_not_called()
+        messages = self.logs.getvalue()
+        self.assertIn("ищу существующий архив", messages)
+        self.assertIn("загрузка 0%", messages)
+        self.assertIn("загрузка 50%", messages)
+        self.assertIn("загрузка 100%; существующий архив обновлён", messages)
 
     def test_empty_page_is_followed_and_duplicates_or_incomplete_search_are_rejected(
         self,
@@ -172,7 +186,10 @@ class GoogleDriveTests(unittest.TestCase):
 
     def test_upload_error_keeps_zip_and_closes_service_and_stream(self):
         self.make_database()
-        self.files.update.return_value.next_chunk.side_effect = OSError("network error")
+        self.files.update.return_value.next_chunk.side_effect = [
+            (Mock(progress=Mock(return_value=1.0)), None),
+            OSError("network error"),
+        ]
         with (
             patch.object(google_api, "create_drive_service", return_value=self.service),
             self.assertRaises(OSError),
@@ -189,6 +206,39 @@ class GoogleDriveTests(unittest.TestCase):
         )
         with ZipFile(self.archive) as archive:
             self.assertEqual(archive.namelist(), [self.database.name])
+        messages = self.logs.getvalue()
+        self.assertIn("прервана: OSError", messages)
+        self.assertIn("загрузка 99%", messages)
+        self.assertNotIn("network error", messages)
+        self.assertNotIn("загрузка 100%", messages)
+
+    def test_logging_import_does_not_load_project_config(self):
+        path = Path(__file__).resolve().parents[1] / "logging_setup.py"
+        spec = importlib.util.spec_from_file_location("isolated_logging", path)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"config": None}):
+            spec.loader.exec_module(module)
+        self.assertIsNotNone(module.log)
+
+    def test_upload_logs_http_status_without_secret_response(self):
+        self.make_database()
+        error = OSError("https://example.invalid/secret?access_token=private-token")
+        error.resp = type("Response", (), {"status": 403})()
+        self.files.update.return_value.next_chunk.side_effect = error
+        with (
+            patch.object(google_api, "create_drive_service", return_value=self.service),
+            self.assertRaises(OSError),
+        ):
+            google_api.upload_database(
+                self.database,
+                self.archive,
+                credentials_path=self.root / "fake.json",
+                folder_id="folder",
+            )
+        messages = self.logs.getvalue()
+        self.assertIn("прервана: OSError (HTTP 403)", messages)
+        self.assertNotIn("private-token", messages)
+        self.assertNotIn("example.invalid", messages)
 
 
 if __name__ == "__main__":

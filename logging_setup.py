@@ -9,8 +9,6 @@ from collections.abc import Callable
 
 from loguru import logger
 
-import config
-
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _REST_PATH = re.compile(r"/rest/\d+/[^/\s\"'?]+", re.IGNORECASE)
 _CREDENTIAL = re.compile(
@@ -66,6 +64,8 @@ class _InterceptHandler(logging.Handler):
 
 def configure_logging(*, diagnostic_path: str | None = None) -> None:
     """Настроить общие логи либо один отдельный диагностический файл."""
+    import config
+
     global _secrets
     values = [
         config.WEBHOOK_URL,
