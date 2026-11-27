@@ -746,7 +746,7 @@ def _main():
     )
 
     # стейджинг ТЕКУЩЕГО снимка: чистим, чтобы файлы прошлых запусков
-    # не попали в новый архив (история хранится в zip-архивах export/)
+    # не попали в новый архив (история хранится в накопительной SQLite)
     snap_root = export_llm.snapshot_root()
     if os.path.isdir(snap_root):
         shutil.rmtree(snap_root)
@@ -955,7 +955,7 @@ def _main():
                     Path(config.SNAPSHOT_SQLITE_PATH),
                     Path(config.EXPORT_DIR)
                     / "database"
-                    / config.GOOGLE_DRIVE_ARCHIVE_NAME,
+                    / config.GOOGLE_DRIVE_ARCHIVE_NAME.format(stamp=ctx.database_stamp),
                     credentials_path=Path(config.GOOGLE_DRIVE_CREDENTIALS_PATH),
                     folder_id=config.GOOGLE_DRIVE_FOLDER_ID,
                     timeout=config.GOOGLE_DRIVE_TIMEOUT,
@@ -975,7 +975,7 @@ def _main():
                 "google_drive_status": "uploaded",
                 "google_drive_file_id": file_id,
             }
-            log.info("Google Drive: архив SQLite обновлён")
+            log.info("Google Drive: архив SQLite обновлён, старые дубли удалены")
 
     _progress(
         entity=None,

@@ -168,7 +168,7 @@ def make_config(root):
         "SNAPSHOT_SQLITE_ENABLED": False,
         "GOOGLE_DRIVE_ENABLED": False,
         "GOOGLE_DRIVE_FOLDER_ID": "synthetic-folder",
-        "GOOGLE_DRIVE_ARCHIVE_NAME": "sqlite3_snapshots.zip",
+        "GOOGLE_DRIVE_ARCHIVE_NAME": "snapshots_{stamp}.zip",
         "GOOGLE_DRIVE_CREDENTIALS_PATH": str(root / "fake-key.json"),
         "GOOGLE_DRIVE_TIMEOUT": 1,
         "GOOGLE_DRIVE_MAX_RETRIES": 0,
@@ -684,7 +684,8 @@ class ExportTests(unittest.TestCase):
                     (1,),
                 )
             self.assertEqual(
-                archive, self.root / "export" / "database" / "sqlite3_snapshots.zip"
+                archive,
+                self.root / "export" / "database" / "snapshots_2026_11_23 12-00.zip",
             )
             return "synthetic-id"
 
@@ -697,6 +698,50 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(progress["google_drive_status"], "uploaded")
         self.assertEqual(progress["google_drive_file_id"], "synthetic-id")
         self.assertEqual(progress["stage"], "done")
+
+    def test_snapshot_zip_removes_only_previous_top_level_zips_after_success(self):
+        export = self.sync.export_llm
+        root = self.root / "export"
+        previous = root / "previous.zip"
+        previous.write_bytes(b"previous")
+        database = root / "database"
+        database.mkdir()
+        nested_zip = database / "keep.zip"
+        nested_zip.write_bytes(b"database")
+        jsonl = root / "keep.jsonl"
+        jsonl.write_bytes(b"jsonl")
+        self.run_sync()
+        self.assertFalse(previous.exists())
+        self.assertEqual(len(list(root.glob("*.zip"))), 1)
+        self.assertEqual(nested_zip.read_bytes(), b"database")
+        self.assertEqual(jsonl.read_bytes(), b"jsonl")
+        self.assertFalse(list(root.glob(".snapshot-*")))
+        ctx = export.ExportContext()
+        current = next(root.glob("*.zip"))
+        before = current.read_bytes()
+        previous.write_bytes(b"previous")
+        for target in ("zipfile.ZipFile.write", "os.replace"):
+            with (
+                self.subTest(target=target),
+                patch(target, side_effect=OSError("isolated failure")),
+                self.assertRaises(OSError),
+            ):
+                export.make_snapshot_zip(ctx)
+            self.assertEqual(previous.read_bytes(), b"previous")
+            self.assertEqual(current.read_bytes(), before)
+            self.assertFalse(list(root.glob(".snapshot-*")))
+
+    def test_database_stamp_uses_snapshot_time_and_same_separator_on_all_platforms(
+        self,
+    ):
+        export = self.sync.export_llm
+        ctx = export.ExportContext()
+        for platform in ("posix", "nt"):
+            with (
+                self.subTest(platform=platform),
+                patch.object(export.os, "name", platform),
+            ):
+                self.assertEqual(ctx.database_stamp, "2026_11_23 12-00")
 
     def test_google_drive_failure_preserves_local_export_and_state(self):
         self.cfg.SNAPSHOT_SQLITE_ENABLED = self.cfg.GOOGLE_DRIVE_ENABLED = True

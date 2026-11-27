@@ -64,35 +64,52 @@ ASSEMBLYAI_API_KEY=<assemblyai_key>
 ### Google Drive
 
 После успешного импорта снимка в `data/sqlite3_snapshots.db` выгрузка создаёт
-`export/database/sqlite3_snapshots.zip` с одним файлом базы и обновляет существующий
-`sqlite3_snapshots.zip` в папке `GOOGLE_DRIVE_FOLDER_ID`. Имя без даты сохраняет
-постоянный ID файла и ссылку: используется `files.update`, без удаления и
-повторного создания. Если файл не найден, поиск неполон или обнаружены дубли
-имени, загрузка прекращается с ошибкой.
+`export/database/snapshots_2026_11_26 15-00.zip` с одним файлом
+`snapshots_2026_11_26 15-00.db`. Дата берётся из времени начала снимка в
+`SNAPSHOT_TZ`; время на всех устройствах записывается как `ЧЧ-ММ`.
+После атомарного сохранения ZIP удаляются остальные файлы непосредственно
+в `export/database/`, включая старые ZIP, БД и их служебные файлы.
+Вложенные каталоги не затрагиваются. Накопительная БД в `data/` сохраняется.
+
+На Drive существующий файл обновляется через `files.update`: новое содержимое
+и новое имя передаются в одном запросе. ID, ссылка, владелец и права сохраняются.
+После подтверждения загрузки остальные архивы базы в этой папке удаляются
+через `files.delete` без корзины; обновлённый файл сохраняется.
+Распознаются прежнее имя `sqlite3_snapshots.zip`, имена
+`snapshots_ГГГГ_ММ_ДД ЧЧ:ММ.zip` / `snapshots_ГГГГ_ММ_ДД ЧЧ-ММ.zip`
+и точное имя загружаемого файла. Другие файлы и папки не затрагиваются.
+При наличии одноимённого файла обновляется он, иначе — последний изменённый
+архив базы. Старые имена с двоеточием поддерживаются для перехода на новый формат.
+При неполном поиске или цикле пагинации изменений нет. Если архив не найден,
+отправка завершается ошибкой: первый ZIP нужно загрузить от имени пользователя.
 
 1. В проекте Google Cloud сервисного аккаунта включите Google Drive API.
 2. Положите JSON-ключ сервисного аккаунта в `key.json` рядом с `config.py`.
    Файл уже исключён из Git правилом `*.json`; не публикуйте его.
-3. Дайте `client_email` из ключа доступ редактора к целевой папке и убедитесь,
-   что сервисному аккаунту доступно редактирование существующего архива.
+3. Дайте `client_email` из ключа доступ редактора к целевой папке и существующему
+   архиву базы. Если есть старые дубли, нужны права их удаления;
+   для удаления в Shared Drive нужна роль `organizer`.
 4. После обновления зависимостей выполните `mise run setup`.
 
 `GOOGLE_DRIVE_ENABLED=True` включает отправку; для отключения задайте `False`.
 `GOOGLE_DRIVE_FOLDER_ID` указывает папку назначения, `GOOGLE_DRIVE_ARCHIVE_NAME`
-задаёт имя локального ZIP в `export/database/` и существующего файла на Drive,
+задаёт шаблон имени ZIP (по умолчанию `snapshots_{stamp}.zip`),
 `GOOGLE_DRIVE_CREDENTIALS_PATH` — абсолютный путь к ключу (по умолчанию в корне).
 `GOOGLE_DRIVE_TIMEOUT=60` ограничивает ожидание отдельного HTTP-запроса,
 `GOOGLE_DRIVE_MAX_RETRIES=3` — повторы временных ошибок чтения списка и каждой
-части загрузки. Клиент использует scope `https://www.googleapis.com/auth/drive`
-для обновления уже существующего файла сервисным аккаунтом.
+части загрузки и удаления старых архивов. Клиент использует scope
+`https://www.googleapis.com/auth/drive` для обновления и удаления файлов.
 
 SQLite backup снимает согласованную копию, включая зафиксированные данные WAL;
 ZIP заменяется локально атомарно. Требуется свободное место под копию базы и ZIP.
 Подкаталог `export/database/` отделяет ZIP базы от архивов карточек для Telegram.
-Загрузка идёт частями по 8 МиБ. При сетевой ошибке база, ZIP и state/registry
-сохраняются; в `data/progress.json` записывается `google_drive_status=error`,
+Загрузка идёт частями по 8 МиБ. При ошибке загрузки старые архивы Drive не
+удаляются; накопительная база, новый локальный ZIP и state/registry сохраняются.
+При ошибке удаления загруженный архив остаётся на Drive, а неочищенные файлы
+будут повторно обработаны при следующей отправке. В обоих случаях в
+`data/progress.json` записывается `google_drive_status=error`,
 в Telegram выводится предупреждение, в `error.log` — тип ошибки и HTTP-код без
-содержимого ответа Google. Повтор следующей выгрузки вновь обновит архив.
+содержимого ответа Google. Следующая отправка обновит архив и повторит очистку.
 При успехе статус — `uploaded`. Ошибка Drive не меняет код успешного завершения
 локальной выгрузки. Без нового ZIP или при ошибке импорта SQLite загрузки нет.
 Запуски с лимитами/ID также отправляют базу, если оба этапа включены.
@@ -108,21 +125,27 @@ Python дополнительно выводит стандартным tracebac
 Итоговые 100% означают подтверждённое Drive завершение запроса; до подтверждения
 процент ограничен 99%. Для ZIP меньше 8 МиБ обычно видны только 0% и 100%.
 
-Сервисный аккаунт не создаёт новые файлы: для него нет личной квоты Drive.
-Если архив удалён, восстановите его от имени пользователя и предоставьте
-сервисному аккаунту доступ. [Ограничение Google](https://developers.google.com/workspace/drive/api/guides/folder),
+У сервисного аккаунта нет личной квоты Drive, поэтому интеграция использует
+обновление существующего файла и не вызывает `files.create`.
+Создание отдельного файла в обычном «Моём диске» с текущей авторизацией
+в пользовательском тесте завершилось HTTP 403 `storageQuotaExceeded`.
+Первый архив должен быть создан пользователем с именем `sqlite3_snapshots.zip`
+или `snapshots_ГГГГ_ММ_ДД ЧЧ-ММ.zip` и доступен сервисному аккаунту.
+[Ограничение Google](https://developers.google.com/workspace/drive/api/guides/folder),
 [обновление файла](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update),
+[удаление файла](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/delete),
 [загрузка частями](https://developers.google.com/workspace/drive/api/guides/manage-uploads).
 
 #### Разовая отправка без выгрузки Bitrix24
 
 Выполняйте разовую отправку после завершения работающей выгрузки. Пример ниже
-берёт уже имеющуюся базу `export/database/sqlite3_snapshots.db`, упаковывает её
-в ZIP рядом и заменяет архив в целевой папке Drive. Этот файл базы должен
-существовать; штатный `sync.py` сохраняет базу в `SNAPSHOT_SQLITE_PATH`
-(`data/sqlite3_snapshots.db`), а в `export/database/` создаёт только ZIP.
-Для отправки штатной базы замените первый аргумент `upload_database` на
-`Path(config.SNAPSHOT_SQLITE_PATH)`.
+берёт накопительную базу из `SNAPSHOT_SQLITE_PATH` (`data/sqlite3_snapshots.db`),
+упаковывает её экспортную копию и обновляет существующий архив в целевой папке Drive.
+Остальные файлы в `export/database/` удаляются после успешной архивации;
+если передать исходную БД из этого каталога, она тоже будет удалена.
+Исходная БД должна существовать: при отсутствии `data/sqlite3_snapshots.db`
+вызов завершится `FileNotFoundError` до обращения к Drive. Наличие готового ZIP
+не заменяет исходную БД для `upload_database`.
 
 Из корня проекта в bash/zsh на macOS/Linux:
 
@@ -130,12 +153,14 @@ Python дополнительно выводит стандартным tracebac
 mise exec -- uv run --no-sync python -B - <<'PY'
 from pathlib import Path
 import config
+from export_llm import ExportContext
 from google_api import upload_database
 
 folder = Path(config.EXPORT_DIR) / "database"
+ctx = ExportContext()
 file_id = upload_database(
-    folder / "sqlite3_snapshots.db",
-    folder / config.GOOGLE_DRIVE_ARCHIVE_NAME,
+    Path(config.SNAPSHOT_SQLITE_PATH),
+    folder / config.GOOGLE_DRIVE_ARCHIVE_NAME.format(stamp=ctx.database_stamp),
     credentials_path=Path(config.GOOGLE_DRIVE_CREDENTIALS_PATH),
     folder_id=config.GOOGLE_DRIVE_FOLDER_ID,
     timeout=config.GOOGLE_DRIVE_TIMEOUT,
@@ -150,13 +175,79 @@ here-string: `@'` на отдельной строке, затем код, за�
 `'@ | mise exec -- uv run --no-sync python -B -` на отдельной строке.
 
 Команда использует ключ и настройки из config, вызывает Google Drive API
-и заменяет удалённый файл. Bitrix24, AssemblyAI и бот не запускаются;
+и обновляет/переименовывает файл с удалением старых дублей. Bitrix24, AssemblyAI и бот не запускаются;
 state/registry и `progress.json` не обновляются. Прямой вызов функции отправляет
 архив независимо от `GOOGLE_DRIVE_ENABLED`: этот флаг проверяется в `sync.py`.
 `--no-sync` использует уже установленное окружение без изменения зависимостей.
 ZIP остаётся локально для повторной отправки. Для отправки готового ZIP без
 новой архивации доступны `create_drive_service` и `replace_archive` из
 [google_api.py](../google_api.py); клиент нужно закрывать через `contextlib.closing`.
+`replace_archive` использует имя переданного локального ZIP: если передать
+`sqlite3_snapshots.zip`, на Drive будет установлено это же имя. Дату формирует
+вызывающий код, как в примере выше; сама функция новое имя не генерирует.
+
+#### Проверка переименования существующего файла
+
+Команда ниже проверяет только изменение имени через `files.update`:
+не загружает содержимое, не читает SQLite и не удаляет файлы. Она использует
+рабочий ключ и целевую папку из config. Остановите выгрузку перед проверкой.
+Поиск допускает исходное и тестовое имя; при отсутствии файла, дублях или
+неполной странице переименование не выполняется.
+
+Из корня проекта в bash/zsh на macOS/Linux:
+
+```bash
+mise exec -- uv run --no-sync python -B - <<'PY'
+from contextlib import closing
+from pathlib import Path
+
+import config
+from google_api import create_drive_service
+
+target_name = "sqlite3_snapshots_test.zip"
+
+with closing(create_drive_service(
+    Path(config.GOOGLE_DRIVE_CREDENTIALS_PATH),
+    config.GOOGLE_DRIVE_TIMEOUT,
+)) as service:
+    response = service.files().list(
+        q=(
+            f"'{config.GOOGLE_DRIVE_FOLDER_ID}' in parents "
+            "and trashed = false "
+            "and (name = 'sqlite3_snapshots.zip' "
+            "or name = 'sqlite3_snapshots_test.zip')"
+        ),
+        fields="files(id,name),nextPageToken,incompleteSearch",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute(num_retries=config.GOOGLE_DRIVE_MAX_RETRIES)
+
+    matches = response.get("files", [])
+    if (len(matches) != 1 or response.get("nextPageToken")
+            or response.get("incompleteSearch")):
+        raise SystemExit(
+            f"Ожидался один архив, найдено: {len(matches)}. "
+            "Переименование не выполнено."
+        )
+
+    result = service.files().update(
+        fileId=matches[0]["id"],
+        body={"name": target_name},
+        fields="id,name,webViewLink",
+        supportsAllDrives=True,
+    ).execute(num_retries=config.GOOGLE_DRIVE_MAX_RETRIES)
+
+    print("Имя на Drive:", result["name"])
+    print("ID:", result["id"])
+    print("Ссылка:", result.get("webViewLink", "не предоставлена"))
+PY
+```
+
+Имя в выводе — подтверждённый Google результат. После проверки замените
+`target_name` на `"sqlite3_snapshots.zip"` и повторите команду: это вернёт
+исходное имя с сохранением ID и содержимого. До восстановления имени
+штатный поиск архивов не распознаёт `sqlite3_snapshots_test.zip`.
+Для PowerShell передайте Python-код через here-string, как описано выше.
 
 #### Диагностика HTTP 403
 
@@ -166,14 +257,16 @@ ZIP остаётся локально для повторной отправки
 Безопасные логи приложения показывают тип исключения и HTTP-код, поэтому
 одного числа 403 недостаточно для точного диагноза.
 
-Проверьте доступ редактора для аккаунта из `client_email` в `key.json` к папке
-и существующему ZIP, а также включение Google Drive API в проекте этого ключа.
+Проверьте доступ аккаунта из `client_email` в `key.json` к целевой папке,
+права обновления архива и удаления старых дублей
+и включение Google Drive API в проекте этого ключа.
 Последний этап лога помогает определить отказавшую операцию:
 
 | Последняя строка этапа | Что проверять |
 |---|---|
-| «ищу существующий архив» | Доступ к списку файлов, настройки API и ограничения проекта |
-| «архив найден; загрузка 0%» или промежуточный процент | Право изменять найденный ZIP и ограничения загрузки |
+| «ищу старые архивы» | Доступ к списку файлов, настройки API и ограничения проекта |
+| «архив найден; загрузка 0%» или промежуточный процент | Право обновления найденного ZIP и ограничения загрузки |
+| «загрузка 100%; существующий архив обновлён», без сообщения об очистке | Право удаления старых дублей ZIP |
 
 Сообщение «клиент готов» означает создание клиента; первый запрос Drive
 выполняется при поиске файла. Чтение файла или списка само по себе не
@@ -259,7 +352,7 @@ store, новый snapshot и возможный ZIP. Это не изолиро
 | `REEXPORT_CLOSED_ON_CHANGE` | `False`: закрытые переиспользуются даже после изменений |
 | `SCHEMA_VERSION`, `SNAPSHOT_TZ`, `MAKE_SNAPSHOT_ZIP` | Схема 2, `Europe/Minsk`, ZIP включён |
 | `SNAPSHOT_SQLITE_ENABLED`, `SNAPSHOT_SQLITE_PATH` | После сборки ZIP сохранять конечные карточки в накопительную БД; включено, путь `data/sqlite3_snapshots.db` |
-| `GOOGLE_DRIVE_*` | Архивирование накопительной SQLite и замена существующего файла; включено. [Доступ и настройки](#google-drive) |
+| `GOOGLE_DRIVE_*` | Архивирование SQLite, обновление/переименование файла и удаление старых дублей; включено. [Доступ и настройки](#google-drive) |
 | `FILE_BRAND`, `DEAL_COUNTRY_BY_CATEGORY`, `ZIP_NAME_TEMPLATE` | Бренд, соответствие ID воронки и страны сделки, имя архива; [правила страны](data.md#файлы-результата) |
 | `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,2 с, 5 попыток, тайм-аут 60 с |
 | `DATA_DIR`, `RAW_DIR`, `AUDIO_DIR`, `TRANSCRIPTS_DIR`, `EXPORT_DIR` | Пути через `os.path` относительно каталога проекта |

@@ -16,6 +16,8 @@ import os
 import re
 import zipfile
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 import config
@@ -140,6 +142,11 @@ class ExportContext:
     def zip_stamp(self):
         """2026-08-03 08-30 — дата-время для имени архива (та же TZ)."""
         return self.started.strftime("%Y-%m-%d %H-%M")
+
+    @property
+    def database_stamp(self):
+        """Единая для всех устройств дата базы в TZ снимка: 2026_11_26 15-00."""
+        return self.started.strftime("%Y_%m_%d %H-%M")
 
     @property
     def export_id(self):
@@ -552,15 +559,22 @@ def make_snapshot_zip(ctx):
     name = config.ZIP_NAME_TEMPLATE.format(stamp=ctx.zip_stamp)
     archive = os.path.join(config.EXPORT_DIR, name + ".zip")
     root = snapshot_root()
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-        for dirpath, _dirs, files in os.walk(root):
-            rel_dir = os.path.relpath(dirpath, root)
-            if rel_dir != "." and not files:
-                # пустые папки — тоже часть контракта структуры
-                z.writestr(rel_dir.replace(os.sep, "/") + "/", "")
-            for fn in files:
-                if fn == ".DS_Store" or fn.startswith("._"):
-                    continue
-                full = os.path.join(dirpath, fn)
-                z.write(full, os.path.relpath(full, root))
+    with TemporaryDirectory(prefix=".snapshot-", dir=config.EXPORT_DIR) as directory:
+        temporary_zip = os.path.join(directory, "snapshot.zip")
+        with zipfile.ZipFile(temporary_zip, "w", zipfile.ZIP_DEFLATED) as z:
+            for dirpath, _dirs, files in os.walk(root):
+                rel_dir = os.path.relpath(dirpath, root)
+                if rel_dir != "." and not files:
+                    # пустые папки — тоже часть контракта структуры
+                    z.writestr(rel_dir.replace(os.sep, "/") + "/", "")
+                for fn in files:
+                    if fn == ".DS_Store" or fn.startswith("._"):
+                        continue
+                    full = os.path.join(dirpath, fn)
+                    z.write(full, os.path.relpath(full, root))
+        os.replace(temporary_zip, archive)
+    for previous in Path(config.EXPORT_DIR).glob("*.zip"):
+        if previous != Path(archive) and previous.is_file():
+            previous.unlink()
+    log.info("ZIP карточек сохранён; предыдущие архивы удалены")
     return archive
