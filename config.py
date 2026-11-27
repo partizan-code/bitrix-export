@@ -118,6 +118,12 @@ SCHEMA_VERSION = 2  # версия схемы в именах файлов и ma
 SNAPSHOT_TZ = "Europe/Minsk"  # единое время для manifest, карточек и ZIP
 MAKE_SNAPSHOT_ZIP = True  # архивировать export/snapshot после выгрузки
 SNAPSHOT_SQLITE_ENABLED = True  # сохранять конечные карточки ZIP в накопительную БД
+GOOGLE_DRIVE_ENABLED = True  # после обновления SQLite заменять её ZIP на Google Drive
+GOOGLE_DRIVE_FOLDER_ID = "1ms4l_Mn9FejSq6oJTfyMAUqIO2dmBKu6"
+GOOGLE_DRIVE_ARCHIVE_NAME = "sqlite3_snapshots.zip"  # существующий файл в папке
+GOOGLE_DRIVE_CREDENTIALS_PATH = os.path.join(BASE_DIR, "key.json")
+GOOGLE_DRIVE_TIMEOUT = 60  # тайм-аут одного HTTP-запроса, с
+GOOGLE_DRIVE_MAX_RETRIES = 3  # повторы временных ошибок запроса/части загрузки
 ZIP_NAME_TEMPLATE = "LEXS выгрузка из Битрикс24 на дату {stamp}"  # без расширения
 # {stamp} — дата снимка в SNAPSHOT_TZ, формат «ГГГГ-ММ-ДД ЧЧ-ММ».
 FILE_BRAND = "LEXS"  # префикс имён: LEXS_DEAL_... / LEXS_SALES_...

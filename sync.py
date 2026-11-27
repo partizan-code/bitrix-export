@@ -10,6 +10,7 @@
     -> чаты открытых линий -> комментарии/письма/задачи -> нормализация
     -> export/snapshot/{Сделки,Лиды}/{Активные,Завершенные,Технические}/*.md
     -> manifest.json -> ZIP «LEXS выгрузка из Битрикс24 на дату ....zip»
+    -> накопительная SQLite -> ZIP базы -> замена архива на Google Drive
 
 Каждый ZIP — ПОЛНЫЙ актуальный снимок (FULL_SNAPSHOT), не дельта:
 закрытые/технические сущности, уже выгруженные и не изменившиеся,
@@ -36,6 +37,7 @@ import fetch_deals
 import fetch_leads
 import fetch_openlines
 import fetch_tasks
+import google_api
 import normalize
 import registry
 import snapshot_sqlite
@@ -910,17 +912,6 @@ def _main():
                 config.SNAPSHOT_SQLITE_PATH,
             )
 
-    _progress(
-        entity=None,
-        stage="done",
-        deals=total_deals,
-        leads=total_leads,
-        errors=len(errors),
-        skipped=len(skipped),
-        zip=os.path.basename(zpath) if zpath else None,
-        **sqlite_result,
-    )
-
     # state.json — якорь следующего инкрементального снимка,
     # registry.json — реестр выгруженных сущностей (защита от дублей закрытых).
     # Тестовые запуски (ID/лимиты в config.py) ни то ни другое
@@ -950,6 +941,53 @@ def _main():
         log.info("Реестр: {} записей (registry.json)", len(books["reg"]))
     else:
         log.info("Тестовый запуск: state.json и registry.json не обновляю")
+
+    drive_result = {}
+    if getattr(config, "GOOGLE_DRIVE_ENABLED", False) and sqlite_result.get(
+        "sqlite_status"
+    ) in {"added", "existing"}:
+        _progress(
+            entity=None, stage="google_drive", deals=total_deals, leads=total_leads
+        )
+        try:
+            with measure("stage.google_drive"):
+                file_id = google_api.upload_database(
+                    Path(config.SNAPSHOT_SQLITE_PATH),
+                    Path(config.EXPORT_DIR)
+                    / "database"
+                    / config.GOOGLE_DRIVE_ARCHIVE_NAME,
+                    credentials_path=Path(config.GOOGLE_DRIVE_CREDENTIALS_PATH),
+                    folder_id=config.GOOGLE_DRIVE_FOLDER_ID,
+                    timeout=config.GOOGLE_DRIVE_TIMEOUT,
+                    retries=config.GOOGLE_DRIVE_MAX_RETRIES,
+                )
+        except Exception as error:  # noqa: BLE001 — локальная выгрузка уже сохранена
+            drive_result = {"google_drive_status": "error"}
+            # Текст Google-ошибки может содержать ключи и авторизованные URL.
+            status = getattr(getattr(error, "resp", None), "status", None)
+            log.error(
+                "Не удалось загрузить SQLite на Google Drive: {} (HTTP {})",
+                type(error).__name__,
+                status if isinstance(status, int) else "—",
+            )
+        else:
+            drive_result = {
+                "google_drive_status": "uploaded",
+                "google_drive_file_id": file_id,
+            }
+            log.info("Google Drive: архив SQLite обновлён")
+
+    _progress(
+        entity=None,
+        stage="done",
+        deals=total_deals,
+        leads=total_leads,
+        errors=len(errors),
+        skipped=len(skipped),
+        zip=os.path.basename(zpath) if zpath else None,
+        **sqlite_result,
+        **drive_result,
+    )
 
     log.info(
         "Готово за {:.1f} мин: сделок {}, лидов {}, касаний {} "

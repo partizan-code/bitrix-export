@@ -12,6 +12,7 @@
 | `export/snapshot/manifest.json` | Охват и результат сборки |
 | `export/*.zip` | Содержимое snapshot, manifest в корне; пустые каталоги включены, `.DS_Store` / `._*` исключены |
 | `data/sqlite3_snapshots.db` | Накопительная структурированная история конечных карточек ZIP; неизменные версии без повторов |
+| `export/database/sqlite3_snapshots.zip` | Согласованная копия накопительной SQLite для замены файла на Google Drive; [подключение](setup.md#google-drive) |
 | `export/touchpoints_<entity>_<group>.jsonl` | Строка — касание; вне ZIP |
 | `export/index_<entity>_<group>.jsonl` | Строка — индекс сущности; вне ZIP |
 | `raw/<entity>_<id>.json` | Сущность и собранные источники для повторной нормализации |
@@ -19,7 +20,7 @@
 | `data/store/` | Последние артефакты, структура ниже |
 | `data/registry.json` | Реестр: ключ `<id>` сделки, `lead:<id>` лида |
 | `data/state.json` | `last_run`, `export_id`, `export_type`, счётчики, `errors.deals/leads` |
-| `data/progress.json` | Этап, счётчики, ошибки; в конце итог и имя ZIP |
+| `data/progress.json` | Этап, счётчики, ошибки; в конце итог, имя ZIP, результат SQLite и [загрузки на Drive](setup.md#google-drive) |
 | `data/deal_fields_meta.json`, `data/lead_fields_meta.json` | Раздельные кэши метаданных, обновляемые общим загрузчиком атомарно |
 | `data/*.json` | Кэши пользователей/контактов, стадий/статусов, источников, воронок, метаданных полей |
 

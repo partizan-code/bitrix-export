@@ -75,6 +75,17 @@ class BotTests(unittest.TestCase):
         self.bot = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.bot)
 
+    def test_google_drive_result_is_visible_in_final_message(self):
+        for status, expected in (
+            ("uploaded", "архив базы обновлён"),
+            ("error", "загрузка базы не удалась"),
+        ):
+            with self.subTest(status=status):
+                self.assertIn(
+                    expected, self.bot.fmt_done({"google_drive_status": status}, 0)
+                )
+        self.assertIn("Google Drive", self.bot.fmt_progress({"stage": "google_drive"}))
+
     def test_start_holds_lock_until_pid_is_published(self):
         queries = [
             types.SimpleNamespace(

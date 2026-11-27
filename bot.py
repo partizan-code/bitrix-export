@@ -120,6 +120,8 @@ def fmt_progress(p):
             f"Из store без обработки: {p.get('reused', 0)}\n"
             f"Ошибок: {p.get('errors', 0)}"
         )
+    if p.get("stage") == "google_drive":
+        return "⏳ Архивация SQLite и загрузка на Google Drive…"
     return "⏳ Финальная сборка (manifest, архив)…"
 
 
@@ -140,6 +142,10 @@ def fmt_done(p, returncode):
     text = escape("\n".join(lines))
     if p and p.get("zip"):
         text += f"\nАрхив: <code>{escape(str(p['zip']))}</code>"
+    if p and p.get("google_drive_status") == "uploaded":
+        text += "\nGoogle Drive: архив базы обновлён."
+    elif p and p.get("google_drive_status") == "error":
+        text += "\n⚠️ Google Drive: загрузка базы не удалась — см. error.log."
     return text
 
 

@@ -11,7 +11,10 @@
 и очищает snapshot. Для каждой сущности `run_entity` выбирает обработку или
 перенос; `process_entity` собирает источники → нормализует → сохраняет raw,
 карточку, касания и индекс в store. Затем формируются групповые JSONL, manifest,
-ZIP (если включён и результат непустой), прогресс и, вне теста, state/registry.
+ZIP (если включён и результат непустой), накопительная SQLite и, вне теста,
+state/registry. После успешного обновления SQLite `google_api` создаёт ZIP базы
+и заменяет существующий файл на Google Drive; затем записывается итоговый прогресс.
+Сбой отправки не отменяет локальный результат. [Подключение](setup.md#google-drive).
 
 Различия в `_ENTITY`: owner_type 2/1, задачи `D_`/`L_`, стадия
 `STAGE_ID`/`STATUS_ID`. Логирование — Loguru с общей настройкой в
@@ -37,6 +40,7 @@ ZIP (если включён и результат непустой), прогр
 | [export_llm.py](../export_llm.py) | JSONL, Markdown, manifest, ZIP, имена/время снимка |
 | [source_sqlite.py](../source_sqlite.py) | Структурированный SQLite по исходным JSON/JSONL, функция `write_snapshot`; CLI — [scripts/source_sqlite.py](../scripts/source_sqlite.py), без API/config |
 | [snapshot_sqlite.py](../snapshot_sqlite.py) | Накопительная БД конечных карточек ZIP; версии без повторов, связи со слепками, проверка восстановления; вызывается из sync, CLI — [scripts/snapshot_sqlite.py](../scripts/snapshot_sqlite.py) |
+| [google_api.py](../google_api.py) | Согласованный ZIP SQLite через backup, подключение сервисного аккаунта и замена архива на Google Drive с сохранением ID |
 | [parse_snapshot.py](../parse_snapshot.py) | Разбор полей и событий Markdown schema-v2, сохранение оформления для точного восстановления |
 | [import_snapshot.py](../import_snapshot.py) | Библиотека импорта готового ZIP в SQLite, без API/config; CLI — [scripts/import_snapshot.py](../scripts/import_snapshot.py), [схема](data.md#sqlite) |
 | [bot.py](../bot.py) | Запуск `sync.py` без аргументов, прогресс и выдача ZIP в Telegram |

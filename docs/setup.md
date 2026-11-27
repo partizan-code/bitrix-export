@@ -61,6 +61,48 @@ ASSEMBLYAI_API_KEY=<assemblyai_key>
 доступ в пределах прав пользователя и scopes. Реальные значения не публикуйте.
 `PORTAL_URL` для ссылок карточек выводится из вебхука; в коде есть резервный адрес.
 
+### Google Drive
+
+После успешного импорта снимка в `data/sqlite3_snapshots.db` выгрузка создаёт
+`export/database/sqlite3_snapshots.zip` с одним файлом базы и обновляет существующий
+`sqlite3_snapshots.zip` в папке `GOOGLE_DRIVE_FOLDER_ID`. Имя без даты сохраняет
+постоянный ID файла и ссылку: используется `files.update`, без удаления и
+повторного создания. Если файл не найден, поиск неполон или обнаружены дубли
+имени, загрузка прекращается с ошибкой.
+
+1. В проекте Google Cloud сервисного аккаунта включите Google Drive API.
+2. Положите JSON-ключ сервисного аккаунта в `key.json` рядом с `config.py`.
+   Файл уже исключён из Git правилом `*.json`; не публикуйте его.
+3. Дайте `client_email` из ключа доступ редактора к целевой папке и убедитесь,
+   что сервисному аккаунту доступно редактирование существующего архива.
+4. После обновления зависимостей выполните `mise run setup`.
+
+`GOOGLE_DRIVE_ENABLED=True` включает отправку; для отключения задайте `False`.
+`GOOGLE_DRIVE_FOLDER_ID` указывает папку назначения, `GOOGLE_DRIVE_ARCHIVE_NAME`
+задаёт имя локального ZIP в `export/database/` и существующего файла на Drive,
+`GOOGLE_DRIVE_CREDENTIALS_PATH` — абсолютный путь к ключу (по умолчанию в корне).
+`GOOGLE_DRIVE_TIMEOUT=60` ограничивает ожидание отдельного HTTP-запроса,
+`GOOGLE_DRIVE_MAX_RETRIES=3` — повторы временных ошибок чтения списка и каждой
+части загрузки. Клиент использует scope `https://www.googleapis.com/auth/drive`
+для обновления уже существующего файла сервисным аккаунтом.
+
+SQLite backup снимает согласованную копию, включая зафиксированные данные WAL;
+ZIP заменяется локально атомарно. Требуется свободное место под копию базы и ZIP.
+Подкаталог `export/database/` отделяет ZIP базы от архивов карточек для Telegram.
+Загрузка идёт частями по 8 МиБ. При сетевой ошибке база, ZIP и state/registry
+сохраняются; в `data/progress.json` записывается `google_drive_status=error`,
+в Telegram выводится предупреждение, в `error.log` — тип ошибки и HTTP-код без
+содержимого ответа Google. Повтор следующей выгрузки вновь обновит архив.
+При успехе статус — `uploaded`. Ошибка Drive не меняет код успешного завершения
+локальной выгрузки. Без нового ZIP или при ошибке импорта SQLite загрузки нет.
+Запуски с лимитами/ID также отправляют базу, если оба этапа включены.
+
+Сервисный аккаунт не создаёт новые файлы: для него нет личной квоты Drive.
+Если архив удалён, восстановите его от имени пользователя и предоставьте
+сервисному аккаунту доступ. [Ограничение Google](https://developers.google.com/workspace/drive/api/guides/folder),
+[обновление файла](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update),
+[загрузка частями](https://developers.google.com/workspace/drive/api/guides/manage-uploads).
+
 ### Локальный тестовый Telegram-бот
 
 Скопируйте [.env.dev.example](../.env.dev.example) в `.env.dev` рядом с `config.py`
@@ -140,6 +182,7 @@ store, новый snapshot и возможный ZIP. Это не изолиро
 | `REEXPORT_CLOSED_ON_CHANGE` | `False`: закрытые переиспользуются даже после изменений |
 | `SCHEMA_VERSION`, `SNAPSHOT_TZ`, `MAKE_SNAPSHOT_ZIP` | Схема 2, `Europe/Minsk`, ZIP включён |
 | `SNAPSHOT_SQLITE_ENABLED`, `SNAPSHOT_SQLITE_PATH` | После сборки ZIP сохранять конечные карточки в накопительную БД; включено, путь `data/sqlite3_snapshots.db` |
+| `GOOGLE_DRIVE_*` | Архивирование накопительной SQLite и замена существующего файла; включено. [Доступ и настройки](#google-drive) |
 | `FILE_BRAND`, `DEAL_COUNTRY_BY_CATEGORY`, `ZIP_NAME_TEMPLATE` | Бренд, соответствие ID воронки и страны сделки, имя архива; [правила страны](data.md#файлы-результата) |
 | `REQUEST_PAUSE`, `MAX_RETRIES`, `REQUEST_TIMEOUT` | Пауза 0,2 с, 5 попыток, тайм-аут 60 с |
 | `DATA_DIR`, `RAW_DIR`, `AUDIO_DIR`, `TRANSCRIPTS_DIR`, `EXPORT_DIR` | Пути через `os.path` относительно каталога проекта |

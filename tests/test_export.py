@@ -47,6 +47,7 @@ PROJECT_MODULES = (
     "registry",
     "store",
     "sync",
+    "google_api",
     "transcribe",
     "users",
     "chat_refresh",
@@ -165,6 +166,12 @@ def make_config(root):
         "REEXPORT_CLOSED_ON_CHANGE": False,
         "MAKE_SNAPSHOT_ZIP": True,
         "SNAPSHOT_SQLITE_ENABLED": False,
+        "GOOGLE_DRIVE_ENABLED": False,
+        "GOOGLE_DRIVE_FOLDER_ID": "synthetic-folder",
+        "GOOGLE_DRIVE_ARCHIVE_NAME": "sqlite3_snapshots.zip",
+        "GOOGLE_DRIVE_CREDENTIALS_PATH": str(root / "fake-key.json"),
+        "GOOGLE_DRIVE_TIMEOUT": 1,
+        "GOOGLE_DRIVE_MAX_RETRIES": 0,
         "SNAPSHOT_SQLITE_PATH": str(root / "data" / "sqlite3_snapshots.db"),
         "FILE_BRAND": "TEST",
         "DEAL_COUNTRY_BY_CATEGORY": {
@@ -664,6 +671,57 @@ class ExportTests(unittest.TestCase):
         self.assertTrue((self.root / "data" / "state.json").exists())
         self.assertEqual(self.read_json("data/progress.json")["sqlite_status"], "error")
         self.assertEqual(Path(self.cfg.SNAPSHOT_SQLITE_PATH).read_bytes(), before)
+
+    def test_google_drive_upload_runs_after_sqlite_and_state(self):
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = self.cfg.GOOGLE_DRIVE_ENABLED = True
+
+        def upload(database, archive, **kwargs):
+            self.assertTrue(database.is_file())
+            self.assertTrue((self.root / "data" / "state.json").is_file())
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM snapshots").fetchone(),
+                    (1,),
+                )
+            self.assertEqual(
+                archive, self.root / "export" / "database" / "sqlite3_snapshots.zip"
+            )
+            return "synthetic-id"
+
+        with patch.object(
+            self.sync.google_api, "upload_database", side_effect=upload
+        ) as upload_mock:
+            self.run_sync()
+        upload_mock.assert_called_once()
+        progress = self.read_json("data/progress.json")
+        self.assertEqual(progress["google_drive_status"], "uploaded")
+        self.assertEqual(progress["google_drive_file_id"], "synthetic-id")
+        self.assertEqual(progress["stage"], "done")
+
+    def test_google_drive_failure_preserves_local_export_and_state(self):
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = self.cfg.GOOGLE_DRIVE_ENABLED = True
+        with patch.object(
+            self.sync.google_api, "upload_database", side_effect=OSError("secret")
+        ):
+            self.run_sync()
+        progress = self.read_json("data/progress.json")
+        self.assertEqual(progress["google_drive_status"], "error")
+        self.assertNotIn("secret", json.dumps(progress))
+        self.assertTrue((self.root / "data" / "state.json").is_file())
+        self.assertTrue(Path(self.cfg.SNAPSHOT_SQLITE_PATH).is_file())
+        self.assertTrue(list((self.root / "export").glob("*.zip")))
+
+    def test_google_drive_does_not_upload_stale_database_after_import_failure(self):
+        self.cfg.SNAPSHOT_SQLITE_ENABLED = self.cfg.GOOGLE_DRIVE_ENABLED = True
+        with (
+            patch.object(
+                self.sync.snapshot_sqlite, "import_snapshot", side_effect=ValueError
+            ),
+            patch.object(self.sync.google_api, "upload_database") as upload,
+        ):
+            self.run_sync()
+        upload.assert_not_called()
+        self.assertNotIn("google_drive_status", self.read_json("data/progress.json"))
 
     def test_incremental_snapshot(self):
         self.run_sync()
